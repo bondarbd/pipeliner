@@ -59,3 +59,23 @@ test('loadTemplates reads yaml dirs, later dir overrides, invalid files are repo
   const r = readTemplate(path.join(a, 'demo.yaml'));
   assert.match(r.hash, /^[0-9a-f]{64}$/);
 });
+
+test('sidecar files (step.js and files under <dir>/<name>/) are folded into the template hash', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-side-'));
+  const file = path.join(dir, 'demo.yaml');
+  fs.writeFileSync(file, 'name: demo\nsteps:\n  - { name: r, once: true, js: ./demo/report.js }\n');
+  fs.mkdirSync(path.join(dir, 'demo'));
+  fs.writeFileSync(path.join(dir, 'demo', 'report.js'), 'export default async () => ({ a: 1 });\n');
+
+  const before = readTemplate(file);
+  assert.deepEqual(before.sidecars, [path.join('demo', 'report.js')]);
+
+  // editing the sidecar script changes the hash even though the yaml text is unchanged
+  fs.writeFileSync(path.join(dir, 'demo', 'report.js'), 'export default async () => ({ a: 2 });\n');
+  const after = readTemplate(file);
+  assert.notEqual(before.hash, after.hash);
+
+  // a missing js file is ignored for hashing (validated elsewhere), not fatal
+  fs.rmSync(path.join(dir, 'demo', 'report.js'));
+  assert.doesNotThrow(() => readTemplate(file));
+});

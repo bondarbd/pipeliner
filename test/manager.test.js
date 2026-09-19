@@ -50,3 +50,16 @@ test('init recovers unfinished runs from disk', async () => {
   assert.equal(m2.get(run.id).cells.p1.s.status, 'interrupted');
   assert.equal(m2.list()[0].id, run.id);
 });
+
+test('templateCommands lists a js step\'s sidecar script', async () => {
+  const { m } = setup();
+  fs.writeFileSync(path.join(m.templateDirs[0], 'demo2.yaml'), 'name: demo2\nsteps:\n  - { name: r, once: true, js: ./demo2/report.js }\n');
+  fs.mkdirSync(path.join(m.templateDirs[0], 'demo2'));
+  fs.writeFileSync(path.join(m.templateDirs[0], 'demo2', 'report.js'), 'export default async () => ({});\n');
+  await m.init();
+  const t2 = m.templates.get('demo2');
+  assert.ok(t2);
+  const commands = m.templateCommands(t2);
+  assert.ok(commands.some((c) => c.includes('demo2/report.js')));
+  assert.ok(commands.some((c) => c === `sidecar: ${path.join('demo2', 'report.js')}`));
+});

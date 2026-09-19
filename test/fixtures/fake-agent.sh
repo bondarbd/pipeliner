@@ -6,7 +6,7 @@
 #   needinput -> prints NEED_INPUT=which version?
 #   dirty     -> creates an untracked file in cwd, then sleeps 30 (for timeout tests)
 prompt="$2"
-echo "PROMPT_BYTES=${#prompt}"
+echo "[fake-agent] prompt bytes: ${#prompt}"
 case "${FAKE_AGENT_MODE:-keys}" in
   keys)      echo "result=ok"; echo "note from agent" >> "$CTX_ITEM/notes.md" ;;
   badformat) if [[ "$prompt" == *"Верни только строки key=value"* ]]; then echo "fixed=1"; else echo "Sure! Here is what I did."; fi ;;

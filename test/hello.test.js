@@ -10,6 +10,7 @@ import { defaultRunners } from '../src/runners/index.js';
 test('hello template runs end to end with real runners', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-hello-'));
   const cfg = loadConfig(home);
+  cfg.projects_root = path.join(home, 'projects'); // never touch the developer's real ~/projects
   const m = new Manager({ home, config: cfg, runners: await defaultRunners(), envValues: {}, templateDirs: [path.resolve('templates')] });
   await m.init();
   const t = m.templates.get('hello');

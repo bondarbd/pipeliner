@@ -35,7 +35,12 @@ export class Manager {
   }
   attach(run) {
     const engine = new Engine({ run, config: this.config, runners: this.runners, envValues: this.envValues });
-    engine.on('error', (e) => { run.note = `engine error: ${e.message}`; store.saveRun(run); });
+    engine.on('error', (e) => {
+      console.error(e.stack || e);
+      run.status = 'paused';
+      run.note = `engine error: ${e.message}`;
+      store.saveRun(run);
+    });
     this.engines.set(run.id, engine);
     return engine;
   }
@@ -66,9 +71,11 @@ export class Manager {
       return it;
     });
   }
-  templateCommands(tpl) {
+  templateCommands(t) {
+    const tpl = t.tpl || t;
     return tpl.steps.map((s) => { const k = bodyKind(s); return `${s.name} [${k}]: ${k === 'shell' ? s.shell : k === 'js' ? s.js : k === 'agent' ? s.agent.prompt.split('\n')[0] : s.human.question}`.trim(); })
-      .concat(tpl.steps.flatMap((s) => [s.check && `${s.name} check: ${s.check}`, s.verify && `${s.name} verify: ${s.verify}`].filter(Boolean)));
+      .concat(tpl.steps.flatMap((s) => [s.check && `${s.name} check: ${s.check}`, s.verify && `${s.name} verify: ${s.verify}`].filter(Boolean)))
+      .concat((t.sidecars || []).map((p) => `sidecar: ${p}`));
   }
   trustFile() { return path.join(this.home, 'trusted.json'); }
   trusted(name, hash) { try { return JSON.parse(fs.readFileSync(this.trustFile(), 'utf8'))[name] === hash; } catch { return false; } }
@@ -84,7 +91,7 @@ export class Manager {
     const perr = this.checkParams(t.tpl, params);
     if (perr.length) throw new Error(`invalid params: ${perr.map((e) => `${e.path} ${e.message}`).join(', ')}`);
     if (t.tpl.modes && !t.tpl.modes.includes(mode)) throw new Error(`mode ${mode} not allowed for ${templateName}`);
-    if (!this.trusted(templateName, t.hash)) throw new NeedsTrust(templateName, t.hash, this.templateCommands(t.tpl));
+    if (!this.trusted(templateName, t.hash)) throw new NeedsTrust(templateName, t.hash, this.templateCommands(t));
     const resolved = this.resolveItems(t.tpl, items.length ? items : (t.tpl.items?.default || []));
     const run = store.createRun(this.home, { template: t, params, items: resolved, mode, initiator });
     this.attach(run).start();
@@ -95,7 +102,8 @@ export class Manager {
     const cutoff = Date.now() - days * 86400_000;
     let removed = 0;
     for (const s of store.listRuns(this.home)) {
-      if (!['done', 'aborted'].includes(s.status) || Date.parse(s.updatedAt) > cutoff) continue;
+      const updated = Date.parse(s.updatedAt);
+      if (!['done', 'aborted'].includes(s.status) || !Number.isFinite(updated) || updated > cutoff) continue;
       fs.rmSync(path.join(store.runsDir(this.home), s.id), { recursive: true, force: true });
       this.engines.delete(s.id); removed++;
     }

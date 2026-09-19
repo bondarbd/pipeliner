@@ -29,7 +29,7 @@ test('happy path: prompt contains body, context, previous steps and input; outpu
   const r = rctx('keys');
   const res = await agent.run({ name: 'a', agent: { prompt: 'Do ${{ item.name }} for ${{ run.params.n }}', input: '${{ item.steps.branch }}' } }, r);
   assert.equal(res.ok, true);
-  assert.deepEqual(res.output, { PROMPT_BYTES: res.output.PROMPT_BYTES, result: 'ok' });
+  assert.deepEqual(res.output, { result: 'ok' });
   const seen = fs.readFileSync(path.join(r.outDir, 'seen-prompt.txt'), 'utf8');
   assert.match(seen, /^Do p1 for 7/);
   assert.match(seen, /<notes>\nearlier note\n<\/notes>/);
@@ -50,7 +50,7 @@ test('format error triggers one repair call; readonly uses readonly_command; pil
   assert.equal(r.calls(), 2);
   const seen = fs.readFileSync(path.join(r.outDir, 'seen-prompt.txt'), 'utf8');
   assert.match(seen, /<pilot_notes>\npilot did Y/);
-  assert.match(fs.readFileSync(r.logPath, 'utf8'), /--mode ro|PROMPT_BYTES/);
+  assert.match(fs.readFileSync(r.logPath, 'utf8'), /--mode ro|fake-agent/);
 });
 
 test('NEED_INPUT is surfaced; dirty tree before start is refused; dirty after kill is flagged', async () => {
@@ -65,4 +65,39 @@ test('NEED_INPUT is surfaced; dirty tree before start is refused; dirty after ki
   const k = rctx('dirty', { timeout: 1 });
   const killed = await agent.run({ name: 'a', agent: { prompt: 'x' } }, k);
   assert.equal(killed.ok, false); assert.equal(killed.dirtyAfterKill, true);
+});
+
+test('spawn failure is reported directly, without a repair call', async () => {
+  const r = rctx('keys', { config: { agent: { command: ['/nonexistent/agent', '-p', '{prompt}'], readonly_command: ['/nonexistent/agent', '-p', '{prompt}'], timeout: 60 }, logs: {} } });
+  const res = await agent.run({ name: 'a', agent: { prompt: 'x' } }, r);
+  assert.equal(res.ok, false);
+  assert.match(res.error, /spawn error|ENOENT|exited 127/);
+  assert.equal(r.calls(), 1);
+});
+
+test('{prompt} substitution does not interpret $-patterns from the prompt body', async () => {
+  const r = rctx('keys');
+  const res = await agent.run({ name: 'a', agent: { prompt: 'body with $& and $1 inside' } }, r);
+  assert.equal(res.ok, true);
+  const seen = fs.readFileSync(path.join(r.outDir, 'seen-prompt.txt'), 'utf8');
+  assert.match(seen, /^body with \$& and \$1 inside/);
+});
+
+test('prompt is capped even with a very large input', async () => {
+  const r = rctx('keys');
+  const big = 'x'.repeat(200_000);
+  const res = await agent.run({ name: 'a', agent: { prompt: 'short body', input: big } }, r);
+  assert.equal(res.ok, true);
+  const seen = fs.readFileSync(path.join(r.outDir, 'seen-prompt.txt'), 'utf8');
+  assert.ok(seen.length < 110_000, `prompt too long: ${seen.length}`);
+  assert.match(seen, /\[truncated/);
+});
+
+test('a git failure (not just "not a repo") fails closed before launching the agent', async () => {
+  const r = rctx('keys');
+  fs.writeFileSync(path.join(r.cwd, '.git', 'index'), 'garbage');
+  const res = await agent.run({ name: 'a', agent: { prompt: 'x' } }, r);
+  assert.equal(res.ok, false);
+  assert.match(res.error, /git check failed/);
+  assert.equal(r.calls(), 0);
 });
