@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=../src/template/schema.json
+name: release
+title: Релиз проектов
+description: >-
+  Для каждого проекта: обновить develop, отпочковать release/0.N, собрать в Jenkins,
+  затем собрать отчёт и опубликовать его в Confluence (агент + проверка).
+params:
+  release: { type: string, required: true, label: "Номер релиза N (ветка release/0.N)" }
+items:
+  source: dirs
+modes: [all, pilot]
+steps:
+  - name: branch
+    each: true
+    resource: "repo:${{ item.dir }}"
+    check: bash ${{ run.skills }}/release/scripts/git_release.sh exists "${{ item.dir }}" release/0.${{ run.params.release }}
+    shell: bash ${{ run.skills }}/release/scripts/git_release.sh create "${{ item.dir }}" release/0.${{ run.params.release }} "${{ run.env.DEVELOP_BRANCH || 'develop' }}"
+    output: keys
+    env: [DEVELOP_BRANCH]
+    timeout: 600
+
+  - name: build
+    each: true
+    shell: >-
+      python3 ${{ run.skills }}/release/scripts/jenkins.py run-one
+      --project ${{ item.name }} --branch release/0.${{ run.params.release }}
+      --commit ${{ item.steps.branch.commit }} --out $OUT
+    output: keys
+    env: [JENKINS_URL, JENKINS_USER, JENKINS_TOKEN, JENKINS_INSECURE, BRANCH_PARAM, EXTRA_PARAMS, MAX_RETRIES, DIST_ARTIFACT_REGEX, DIST_URL_REGEX, COMMIT_REGEX]
+    timeout: 5400
+    retriable: true
+    parallel: 10
+    on_fail:
+      - { do: retry, times: 1, delay: 60 }
+      - { do: pause }
+
+  - name: report
+    once: true
+    barrier: succeeded
+    js: ./steps/release-report.js
+    output: json
+
+  - name: publish
+    once: true
+    barrier: succeeded
+    agent:
+      prompt: |
+        Релиз 0.${{ run.params.release }}. Через MCP Confluence найди страницу релиза 0.${{ run.params.release }}
+        (пространство и заголовок — по соглашению команды; если страницы нет — заверши работу строкой NEED_INPUT=укажи URL страницы релиза).
+        Вставь между маркерами <!-- runboard:start --> и <!-- runboard:end --> содержимое файла ${{ run.steps.report.path }}
+        (если маркеров нет — добавь их в конец страницы). Ничего другого на странице не меняй.
+        В результате напечатай page_url=<url страницы>.
+      input: ${{ run.steps.report.rows }}
+      timeout: 900
+    output: keys
+    verify: bash ${{ run.skills }}/release/scripts/confluence_check.sh "${{ run.params.release }}" "${{ run.steps.report.path }}"
+    env: [CONFLUENCE_URL, CONFLUENCE_TOKEN, CONFLUENCE_USER, CONFLUENCE_PASSWORD, CONFLUENCE_SPACE, CONFLUENCE_RELEASE_TITLE]
+    on_fail:
+      - { do: pause }
