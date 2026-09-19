@@ -1,4 +1,9 @@
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const SECRET_KEY = /token|password|passwd|secret|credential|api_?key|private/i;
+
+// values of env entries whose NAME looks like a secret — masking every env value would
+// also hide plain words like DEVELOP_BRANCH=develop in every log line
+export const secretValues = (env = {}) => Object.entries(env).filter(([k]) => SECRET_KEY.test(k)).map(([, v]) => v);
 
 export function createMasker(values = []) {
   const forms = new Set();

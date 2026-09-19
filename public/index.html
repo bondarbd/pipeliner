@@ -103,7 +103,7 @@
       <header><b>{{ drawer.item || '*' }} / {{ drawer.step }}</b> — {{ cellOf(drawer).status }}
         <span v-if="cellOf(drawer).error"> · {{ cellOf(drawer).error }}</span>
         <span style="float:right"><button @click="cellAct('retry')" :disabled="!canRetry(cellOf(drawer))">Retry</button> <button class="secondary" @click="cellAct('skip')">Skip</button> <button class="outline" @click="drawer=null">×</button></span></header>
-      <p v-if="drawer.kind==='cell'"><small>попыток: {{ cellOf(drawer).attempts }} · ступень on_fail: {{ cellOf(drawer).rung }} · seq: {{ cellOf(drawer).seq }}<span v-if="cellOf(drawer).orphanPid"> · orphan pid: {{ cellOf(drawer).orphanPid }}</span></small><br>
+      <p v-if="drawer.kind==='cell'"><small>попыток: {{ cellOf(drawer).attempts }} · ступень on_fail: {{ cellOf(drawer).rung }} · seq: {{ cellOf(drawer).seq }}<span v-if="cellOf(drawer).via==='check'"> · выполнен ранее (check)</span><span v-if="cellOf(drawer).orphanPid"> · orphan pid: {{ cellOf(drawer).orphanPid }}</span></small><br>
         <code v-if="cellOf(drawer).command">{{ cellOf(drawer).command }}</code></p>
       <p><a href="#" @click.prevent="loadLog('log')">log</a> · <a href="#" @click.prevent="loadLog('check')">check</a> · <a href="#" @click.prevent="loadLog('verify')">verify</a> · <a href="#" @click.prevent="loadLog('diagnose')">diagnose</a> · <a href="#" @click.prevent="loadLog('diff')">diff</a> · <a href="#" @click.prevent="loadRender()">rendered</a></p>
       <pre class="log">{{ logText }}</pre>

@@ -42,7 +42,10 @@ export async function run(step, r) {
     maxBytes: r.config.logs?.max_step_log_bytes, onSpawn: r.onSpawn });
   const base = { command: cmd, code: res.code, timedOut: res.timedOut };
   if (res.timedOut) return { ok: false, error: `timeout after ${r.timeout}s`, ...base };
-  if (res.code !== 0) return { ok: false, error: `exit ${res.code}`, ...base };
+  if (res.code !== 0) {
+    const last = res.tail.trim().split('\n').filter((l) => l.trim()).pop() || '';
+    return { ok: false, error: `exit ${res.code}${last ? `: ${last.trim().slice(-200)}` : ''}`, ...base };
+  }
   try { return { ok: true, output: parseOutput(step.output || 'keys', { tail: res.tail, outDir: r.outDir }), ...base }; }
   catch (e) { return { ok: false, error: e.message, formatError: true, ...base }; }
 }

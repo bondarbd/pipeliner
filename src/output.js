@@ -4,9 +4,19 @@ import path from 'node:path';
 export class OutputError extends Error {}
 const KEY_RE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
 
+// strips the markdown decoration weaker models add around a line: "**key=value**", "- `key=value`"
+function undecorate(raw) {
+  let line = raw.trim();
+  const lead = line.match(/^(?:[-*>]\s+|\*\*|`)+/)?.[0] || '';
+  line = line.slice(lead.length);
+  if (lead.includes('**') && line.endsWith('**')) line = line.slice(0, -2);
+  if (lead.includes('`') && line.endsWith('`')) line = line.slice(0, -1);
+  return line;
+}
+
 function keysFrom(text, into) {
   for (const line of text.split('\n')) {
-    const m = line.match(KEY_RE);
+    const m = undecorate(line).match(KEY_RE);
     if (m) into[m[1]] = m[2].trim();
   }
   return into;

@@ -14,6 +14,11 @@ test('keys from stdout and $OUT/result, later wins', () => {
   assert.deepEqual(o, { commit: 'fff', dist: 'http://x/y.zip' });
 });
 
+test('keys survive markdown decoration, masked values are kept intact', () => {
+  const o = parseOutput('keys', { tail: '**summary=Обновлена зависимость**\n- `page_url=https://c/x`\n> commit=abc\ntok=***\n', outDir: dir() });
+  assert.deepEqual(o, { summary: 'Обновлена зависимость', page_url: 'https://c/x', commit: 'abc', tok: '***' });
+});
+
 test('json prefers result.json, falls back to last JSON line', () => {
   const outDir = dir();
   assert.deepEqual(parseOutput('json', { tail: 'log\n{"a":1}\n{"a":2}\ntrailer', outDir }), { a: 2 });

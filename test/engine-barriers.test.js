@@ -70,6 +70,21 @@ test('needInput round trip: runner asks a follow-up question, answer resumes the
   assert.match(fs.readFileSync(paths(run, 'a').notes, 'utf8'), /A: 2/);
 });
 
+test('an agent that keeps asking NEED_INPUT is paused after 3 rounds instead of looping', async () => {
+  const { engine, run } = mkEngine({ items: [{ name: 'a' }],
+    steps: [{ name: 's', each: true, shell: 'x' }],
+    plan: { 'a:s': { ok: false, needInput: 'url?' } } });
+  engine.start(); await engine.idle();
+  for (let i = 0; i < 3; i++) {
+    assert.equal(run.cells.a.s.status, 'waiting', `round ${i}`);
+    engine.answer('a', 's', { answer: 'dunno' }); await engine.idle();
+  }
+  assert.equal(run.cells.a.s.status, 'paused');
+  assert.match(run.cells.a.s.error, /asked for input 4 times, last: url\?/);
+  engine.retry('a', 's'); await engine.idle();
+  assert.equal(run.cells.a.s.status, 'waiting');   // user retry resets the question budget
+});
+
 test('pilot rejection pauses the run and re-asks after resume', async () => {
   const order = [];
   const rec = (step, r) => { order.push(`${r.item.name}:${step.name}:${r.pilotNotes ? 'notes' : '-'}`); return { ok: true, output: {} }; };

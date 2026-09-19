@@ -61,8 +61,24 @@ export class Manager {
     }
     return errs;
   }
+  // template param defaults, overridden by what the caller passed
+  withDefaults(tpl, params = {}) {
+    const out = {};
+    for (const [k, p] of Object.entries(tpl.params || {})) if (p.default !== undefined) out[k] = p.default;
+    return { ...out, ...params };
+  }
+  // sub-dirs of projects_root that look like a project (git repo or maven module)
+  listProjects() {
+    const root = this.config.projects_root;
+    if (!fs.existsSync(root)) return [];
+    return fs.readdirSync(root).filter((n) => fs.existsSync(path.join(root, n, '.git')) || fs.existsSync(path.join(root, n, 'pom.xml'))).sort();
+  }
   resolveItems(tpl, items = []) {
     const source = tpl.items?.source || 'manual';
+    if (!items.length) items = tpl.items?.default || [];
+    if (!items.length && source === 'dirs') {
+      throw new Error(`template ${tpl.name} takes projects from ${this.config.projects_root} — pass --items a,b (available: ${this.listProjects().join(', ') || 'none'})`);
+    }
     return items.map((raw) => {
       const it = typeof raw === 'string' ? { name: raw } : { ...raw };
       if (!it.name) throw new Error('item without name');
@@ -91,11 +107,12 @@ export class Manager {
   async create({ templateName, params = {}, items = [], mode = 'all', initiator = { via: 'cli', user: os.userInfo().username } }) {
     const t = this.templates.get(templateName);
     if (!t) throw new Error(`template not found: ${templateName}`);
+    params = this.withDefaults(t.tpl, params);
     const perr = this.checkParams(t.tpl, params);
     if (perr.length) throw new Error(`invalid params: ${perr.map((e) => `${e.path} ${e.message}`).join(', ')}`);
     if (t.tpl.modes && !t.tpl.modes.includes(mode)) throw new Error(`mode ${mode} not allowed for ${templateName}`);
+    const resolved = this.resolveItems(t.tpl, items);   // cheap input errors first, the trust question last
     if (!this.trusted(templateName, t.hash)) throw new NeedsTrust(templateName, t.hash, this.templateCommands(t));
-    const resolved = this.resolveItems(t.tpl, items.length ? items : (t.tpl.items?.default || []));
     const run = store.createRun(this.home, { template: t, params, items: resolved, mode, initiator });
     this.attach(run).start();
     return run;

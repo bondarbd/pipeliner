@@ -61,7 +61,8 @@ export async function run(step, r) {
   const env = { ...stepEnv(r), CTX_ITEM: ctxDir };
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const argv = cmdTpl.map((x) => x.split('{prompt}').join(prompt));
+    const fill = { '{prompt}': prompt, '{out}': r.outDir, '{ctx}': ctxDir };
+    const argv = cmdTpl.map((x) => Object.entries(fill).reduce((s, [k, v]) => s.split(k).join(v), x));
     r.countAgentCall();
     const logged = argv.map((x) => r.masker.mask(x)).map((x) => (x.length > 80 ? `${x.slice(0, 80)}…` : x)).join(' ');
     fs.appendFileSync(r.logPath, `\n[runboard] agent call ${attempt + 1}: ${logged}\n`);

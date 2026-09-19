@@ -14,8 +14,15 @@ export function newRunId() {
 }
 
 export function newCell() {
-  return { status: 'pending', attempts: 0, retriesUsed: 0, rung: 0, diagnosed: false, noRetry: false, seq: null, pid: null,
-    output: null, error: null, note: null, command: null, waiting: null, needInput: false, startedAt: null, finishedAt: null, retryAt: null };
+  return { status: 'pending', attempts: 0, retriesUsed: 0, rung: 0, diagnosed: false, noRetry: false, questions: 0, seq: null, pid: null,
+    output: null, via: null, error: null, note: null, command: null, waiting: null, needInput: false, startedAt: null, finishedAt: null, retryAt: null };
+}
+
+export const LOG_KINDS = ['log', 'check', 'verify', 'diagnose', 'diff'];
+// path of one of a cell's log files: <step>.<seq>.log, .check.log, .verify.log, .diagnose.log or .diff
+export function logFile(run, itemName, step, seq, kind = 'log') {
+  const ext = kind === 'log' ? 'log' : kind === 'diff' ? 'diff' : `${kind}.log`;
+  return paths(run, itemName).logPath(step, seq).replace(/\.log$/, `.${ext}`);
 }
 
 export function paths(run, itemName) {
@@ -106,6 +113,14 @@ export function saveStepOutput(run, itemName, step, output) {
 export function appendNotes(run, itemName, text, who = 'human') {
   ensureDirs(run, itemName);
   fs.appendFileSync(paths(run, itemName).notes, `\n### ${new Date().toISOString()} [${who}] ${text}\n`);
+}
+
+// last `bytes` of a file, with a marker when the head was cut
+export function tailFile(file, bytes) {
+  const size = fs.statSync(file).size; const start = Math.max(0, size - bytes);
+  const fd = fs.openSync(file, 'r'); const buf = Buffer.alloc(size - start);
+  fs.readSync(fd, buf, 0, buf.length, start); fs.closeSync(fd);
+  return (start ? `[…${start} bytes skipped]\n` : '') + buf.toString('utf8');
 }
 
 export function readNotes(run, itemName, maxBytes = 8192) {

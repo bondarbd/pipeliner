@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createMasker } from '../src/secrets.js';
+import { createMasker, secretValues } from '../src/secrets.js';
+
+test('only secret-looking env names are masked', () => {
+  const env = { JENKINS_TOKEN: 'tok-123456', CONFLUENCE_PASSWORD: 'pw-123456', DEVELOP_BRANCH: 'develop', JENKINS_URL: 'https://jenkins.corp', API_KEY: 'key-123456' };
+  assert.deepEqual(secretValues(env).sort(), ['key-123456', 'pw-123456', 'tok-123456']);
+  const m = createMasker(secretValues(env));
+  assert.equal(m.mask('checkout develop at https://jenkins.corp with tok-123456'), 'checkout develop at https://jenkins.corp with ***');
+});
 
 test('masks exact, base64 and urlencoded forms', () => {
   const m = createMasker(['s3cr3t-token', 'ab', '']);

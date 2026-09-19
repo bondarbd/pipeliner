@@ -42,7 +42,28 @@ test('init, doctor, validate, render, dry-run and a real hello run', () => {
   r = sh(['retry', id, 'gamma', 'flaky'], env);
   assert.equal(r.code, 2);
   r = sh(['show', id], env);
-  assert.match(r.out, /gamma +flaky +paused/);
+  assert.equal(r.code, 0);                                   // show reports state, it is not a failure
+  assert.match(r.out, /gamma +flaky +paused +exit 2: permanent error/);
+  r = sh(['log', id, 'gamma', 'flaky'], env);
+  assert.equal(r.code, 0); assert.match(r.out, /flaky\.\d+\.log[\s\S]*permanent error: pom.xml broken/);
+  r = sh(['skip', id, 'gamma', 'flaky'], env);
+  assert.equal(r.code, 0, r.out); assert.match(r.out, /status=done/);
+  r = sh(['retry', id, 'gamma', 'flaky'], env);
+  assert.equal(r.code, 1); assert.match(r.out, /is done — nothing to do/);
+  r = sh(['render', 'hello', '--step', 'greet'], env);       // no --item: first item is used
+  assert.equal(r.code, 0); assert.match(r.out, /alpha/);
+});
+
+test('run without a terminal leaves a NEED_INPUT question unanswered instead of feeding it --answer', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-cli-ni-'));
+  const env = { RUNBOARD_HOME: home };
+  fs.mkdirSync(path.join(home, 'templates'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'config.yaml'), 'env_file: /dev/null\n');
+  // a shell step behaves like an agent that needs input: the engine turns NEED_INPUT into a waiting cell
+  fs.writeFileSync(path.join(home, 'templates', 'ask.yaml'), 'name: ask\nitems: { source: manual, default: [{ name: p }] }\nsteps:\n  - { name: s, each: true, shell: "echo NEED_INPUT=which version?; exit 1" }\n');
+  const r = sh(['run', 'ask', '--yes', '--answer', 'Да'], env);
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /paused|waiting/);
 });
 
 test('run --dry-run never attaches an engine: a run.json with a running cell is left byte-identical', () => {

@@ -12,7 +12,7 @@ import { defaultRunners } from '../runners/index.js';
 import * as store from '../engine/store.js';
 import { isAlive } from '../engine/proc.js';
 import { instanceLock, LockBusy } from '../engine/locks.js';
-import { createMasker } from '../secrets.js';
+import { createMasker, secretValues } from '../secrets.js';
 import { previewRows } from '../preview.js';
 import { table } from './table.js';
 
@@ -24,7 +24,7 @@ async function manager(io, recover = true) {
   const m = new Manager({ home: io.home, config: io.config, runners: await defaultRunners(), envValues: loadEnvFile(io.config.env_file), templateDirs: templateDirs(io.home) });
   return m.init({ recover });
 }
-const maskerFor = (io) => createMasker(Object.values(loadEnvFile(io.config.env_file)));
+const maskerFor = (io) => createMasker(secretValues(loadEnvFile(io.config.env_file)));
 const splitItems = (args) => (args.items ? args.items.split(',') : []);
 const nullable = (s) => (s === '_' || s === '-' ? null : s);
 
@@ -116,7 +116,8 @@ async function preview(args, io, name) {
   const m = await manager(io, false);
   const t = m.templates.get(name);
   if (!t) { io.err(`template not found: ${name}`); return null; }
-  return previewRows(m, t, { params: args.params, items: splitItems(args) }, maskerFor(io));
+  const items = args.items ? splitItems(args) : args.item ? [args.item] : [];
+  return previewRows(m, t, { params: args.params, items }, maskerFor(io));
 }
 export async function renderCmd(args, io) {
   const rows = await preview(args, io, args._[0]); if (!rows) return 1;
@@ -127,7 +128,7 @@ export async function renderCmd(args, io) {
 }
 
 function printRun(run, io) {
-  const info = (c) => c.error || (c.waiting ? `? ${c.waiting.question}` : '');
+  const info = (c) => c.error || (c.waiting ? `? ${c.waiting.question}` : c.via === 'check' ? 'via check' : '');
   const rows = [];
   for (const s of run.steps) {
     if (s.once) rows.push(['*', s.name, run.once[s.name].status, info(run.once[s.name])]);
@@ -138,8 +139,11 @@ function printRun(run, io) {
   return run.status === 'done' ? 0 : 2;
 }
 
-async function ask(io, question, options) {
-  if (io.answer !== undefined) return io.answer;
+// --answer covers human steps and the pilot gate, never an agent's free-text NEED_INPUT question;
+// without a terminal there is nobody to ask, so null is returned and the run is left waiting
+async function ask(io, question, options, { canned = true } = {}) {
+  if (canned && io.answer !== undefined) return io.answer;
+  if (!process.stdin.isTTY) return null;
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const a = await new Promise((res) => rl.question(`${question} ${options.length ? `[${options.join('/')}] ` : ''}`, res));
   rl.close();
@@ -150,11 +154,20 @@ async function followEngine(e, io) {
   for (;;) {
     await e.idle();
     const run = e.run;
-    if (run.pilot?.status === 'waiting') { e.answer('__pilot__', null, { answer: await ask(io, `Пилот ${run.pilot.item} прошёл. Продолжать на остальных?`, ['Да', 'Нет']) }); continue; }
-    const waiting = [...e.allCells()].find(([, , c]) => c.status === 'waiting');
-    if (!waiting) return run;
-    const [item, step, c] = waiting;
-    e.answer(item, step.name, { answer: await ask(io, `${item ?? '*'}/${step.name}: ${c.waiting.question}`, c.waiting.options) });
+    let item = '__pilot__', step = null, question, options, canned = true;
+    if (run.pilot?.status === 'waiting') { question = `Пилот ${run.pilot.item} прошёл. Продолжать на остальных?`; options = ['Да', 'Нет']; }
+    else {
+      const waiting = [...e.allCells()].find(([, , c]) => c.status === 'waiting');
+      if (!waiting) return run;
+      const c = waiting[2];
+      item = waiting[0]; step = waiting[1].name; question = `${item ?? '*'}/${step}: ${c.waiting.question}`; options = c.waiting.options; canned = !c.needInput;
+    }
+    const a = await ask(io, question, options, { canned });
+    if (a === null) {
+      io.out(`waiting for input — ${question}\n  answer with: runboard answer ${run.id} ${item ?? '_'} ${step ?? '-'} TEXT`);
+      return run;
+    }
+    e.answer(item, step, { answer: a });
   }
 }
 async function serverFollow(io, id, waitSeconds = 0) {
@@ -198,21 +211,48 @@ export async function list(args, io) {
   return 0;
 }
 export async function show(args, io) {
-  return printRun(liveServer(io.home) ? await api(io, 'GET', `/runs/${args._[0]}`) : store.loadRun(io.home, args._[0]), io);
+  printRun(liveServer(io.home) ? await api(io, 'GET', `/runs/${args._[0]}`) : store.loadRun(io.home, args._[0]), io);
+  return 0;
+}
+export async function log(args, io) {
+  const [id, item, step] = args._;
+  const run = store.loadRun(io.home, id);
+  const c = store.itemCell(run, nullable(item), step);
+  if (!c.seq) { io.err(`${item}/${step} has not run yet`); return 1; }
+  const kind = args.kind || 'log';
+  if (!store.LOG_KINDS.includes(kind)) { io.err(`--kind must be ${store.LOG_KINDS.join('|')}`); return 1; }
+  const file = store.logFile(run, nullable(item), step, c.seq, kind);
+  if (!fs.existsSync(file)) { io.err(`no ${kind} for ${item}/${step} (attempt ${c.seq}): ${file}`); return 1; }
+  io.out(`# ${file}`);
+  io.out(store.tailFile(file, Number(args.bytes) || 4096).trimEnd());
+  return 0;
 }
 // a user action on a live run: through the server when it is up, otherwise in-process under the instance lock
 async function engineAction(args, io, id, viaServer, local) {
   if (liveServer(io.home)) { await viaServer(); return printRun(await serverFollow(io, id, Number(args.wait) || 0), io); }
   return withInstanceLock(io, async () => {
     const m = await manager(io); const e = m.engine(id);
-    if (!e) { io.err('run is finished or unknown'); return 1; }
-    local(e);
+    if (!e) {
+      const r = m.get(id);
+      io.err(r ? `run ${id} is ${r.status} — nothing to do` : `unknown run ${id}`);
+      return 1;
+    }
+    await local(e);
     return printRun(await followEngine(e, io), io);
   });
 }
 export function retry(args, io) {
   const [id, item, step] = args._;
   return engineAction(args, io, id, () => api(io, 'POST', `/runs/${id}/cells/${item}/${step}/retry`), (e) => e.retry(nullable(item), step));
+}
+export function skip(args, io) {
+  const [id, item, step] = args._;
+  return engineAction(args, io, id, () => api(io, 'POST', `/runs/${id}/cells/${item}/${step}/skip`), (e) => e.skipCell(nullable(item), step));
+}
+export function abort(args, io) {
+  const [id, item] = args._;
+  if (item) return engineAction(args, io, id, () => api(io, 'POST', `/runs/${id}/items/${item}/abort`), (e) => e.abortItem(item));
+  return engineAction(args, io, id, () => api(io, 'POST', `/runs/${id}/abort`), (e) => e.abort('aborted by user'));
 }
 export function answer(args, io) {
   const [id, item, step, ...rest] = args._; const a = rest.join(' ');

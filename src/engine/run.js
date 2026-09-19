@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import * as store from './store.js';
 import { buildCtx } from './context.js';
 import { render } from '../expr.js';
-import { createMasker } from '../secrets.js';
+import { createMasker, secretValues } from '../secrets.js';
 import * as locks from './locks.js';
 import { killGroup } from './proc.js';
 import { bodyKind } from '../template/validate.js';
@@ -15,6 +15,7 @@ const RETRIABLE = ['paused', 'interrupted', 'unverified', 'failed', 'skipped'];
 const SKIPPABLE = ['paused', 'interrupted', 'unverified', 'failed', 'pending', 'waiting'];
 const YES = ['Да', 'да', 'Yes', 'yes'];
 const NO = ['Нет', 'нет', 'No', 'no'];
+const MAX_QUESTIONS = 3;   // NEED_INPUT rounds per cell before the lane pauses instead of asking again
 
 const now = () => new Date().toISOString();
 // runner context for a helper command (check / verify / diagnose) of the same cell: own log file
@@ -24,7 +25,7 @@ export class Engine extends EventEmitter {
   constructor({ run, config, runners, envValues = {}, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
     super();
     this.run = run; this.config = config; this.runners = runners; this.envValues = envValues; this.sleep = sleep;
-    this.masker = createMasker(Object.values(envValues));
+    this.masker = createMasker(secretValues(envValues));
     this.active = new Map();     // "item:step" -> { step, agent }
     this.timers = new Set();
     this.ticking = false; this.tickQueued = false;
@@ -206,6 +207,10 @@ export class Engine extends EventEmitter {
       if (this.aborted()) return;
       if (res.command) c.command = this.masker.mask(res.command);
       c.pid = null;
+      if (res.needInput && ++c.questions > MAX_QUESTIONS) {
+        c.error = `agent asked for input ${c.questions} times, last: ${res.needInput}`;
+        return this.finish(item, step, c, 'paused', { code: res.code });
+      }
       if (res.waiting || res.needInput) {
         c.status = 'waiting'; c.needInput = !!res.needInput;
         c.waiting = res.waiting || { question: res.needInput, options: [], fields: [] };
@@ -291,7 +296,7 @@ export class Engine extends EventEmitter {
       try { this.produceItems(step, output); }
       catch (e) { c.error = `items: ${e.message}`; return this.finish(item, step, c, 'paused'); }
     }
-    c.output = output; c.waiting = null;
+    c.output = output; c.via = how; c.waiting = null;
     store.saveStepOutput(this.run, item ? item.name : null, step.name, output);
     this.finish(item, step, c, 'success', { how, code: res?.code });
   }
@@ -323,7 +328,7 @@ export class Engine extends EventEmitter {
   retry(itemName, stepName) {
     const c = this.userCell(itemName, stepName, RETRIABLE, 'retry');
     if (c.noRetry) throw new Error(`retry blocked: ${c.error}`);
-    c.attempts = 0; c.status = 'pending'; c.error = null; c.retryAt = null;   // a user retry grants a fresh max_attempts allowance
+    c.attempts = 0; c.questions = 0; c.status = 'pending'; c.error = null; c.retryAt = null;   // a user retry grants a fresh allowance
     if (itemName) this.item(itemName).status = 'active';
     if (this.run.status === 'done') this.run.status = 'running';
     this.changed({ type: 'cell.retry', item: itemName, step: stepName, by: 'user' });

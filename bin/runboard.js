@@ -5,9 +5,15 @@ import * as c from '../src/cli/commands.js';
 
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._.shift();
-const commands = { init: c.init, doctor: c.doctor, validate: c.validate, render: c.renderCmd, run: c.run, list: c.list, show: c.show, retry: c.retry, answer: c.answer, clean: c.clean, serve: c.serve };
+const commands = { init: c.init, doctor: c.doctor, validate: c.validate, render: c.renderCmd, run: c.run, list: c.list, show: c.show, log: c.log,
+  retry: c.retry, skip: c.skip, abort: c.abort, answer: c.answer, clean: c.clean, serve: c.serve };
 if (!commands[cmd]) {
-  console.log(`usage: runboard <${Object.keys(commands).join('|')}> [args]\n  run <template> [--param k=v]... [--items a,b] [--mode all|pilot] [--dry-run] [--yes]\n  render <template> --step S [--item I] [--param k=v]\n  retry <run> <item|_> <step>    answer <run> <item|_|__pilot__> <step|-> <text>`);
+  console.log(`usage: runboard <${Object.keys(commands).join('|')}> [args]
+  run <template> [--param k=v]... [--items a,b] [--mode all|pilot] [--dry-run] [--yes] [--answer TEXT]
+  render <template> --step S [--item I] [--param k=v]
+  show <run>                       log <run> <item|_> <step> [--kind log|check|verify|diagnose|diff] [--bytes N]
+  retry <run> <item|_> <step>      skip <run> <item|_> <step>      abort <run> [item]
+  answer <run> <item|_|__pilot__> <step|-> <text>`);
   process.exit(cmd ? 1 : 0);
 }
 const home = defaultHome();

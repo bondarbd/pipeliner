@@ -4,13 +4,18 @@ import { render } from './expr.js';
 import { buildCtx } from './engine/context.js';
 
 // Engine-free rendering of every item × step for `runboard run --dry-run`, `runboard render`
-// and POST /api/templates/:name/preview. Never touches run.json.
+// and POST /api/templates/:name/preview. Never touches run.json. Outputs of steps that have
+// not run yet are shown as placeholders: item.steps.branch.commit -> @branch.commit
+const placeholder = (step) => new Proxy({}, { get: (_, k) => (typeof k === 'string' ? `@${step}.${k}` : undefined) });
+
 export function previewRows(manager, t, { params = {}, items = [] } = {}, masker) {
-  const resolved = manager.resolveItems(t.tpl, items.length ? items : (t.tpl.items?.default || []));
-  const run = { id: 'dry', dir: path.join(manager.home, 'runs', 'dry'), templateDir: t.dir, params, steps: t.tpl.steps,
-    items: resolved.map((i) => ({ status: 'active', ...i })), cells: {}, once: {} };
+  const steps = t.tpl.steps;
+  const cells = (filter) => Object.fromEntries(steps.filter(filter).map((s) => [s.name, { output: placeholder(s.name) }]));
+  const resolved = manager.resolveItems(t.tpl, items).map((i) => ({ status: 'active', ...i }));
+  const run = { id: 'dry', dir: path.join(manager.home, 'runs', 'dry'), templateDir: t.dir, params: manager.withDefaults(t.tpl, params), steps,
+    items: resolved, cells: Object.fromEntries(resolved.map((i) => [i.name, cells((s) => s.each)])), once: cells((s) => s.once) };
   const rows = [];
-  for (const s of t.tpl.steps) {
+  for (const s of steps) {
     for (const it of s.once ? [null] : run.items) {
       let command;
       try { command = String(bodyText(s, buildCtx({ run, item: it, config: manager.config }))); }

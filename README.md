@@ -10,7 +10,7 @@ runboard — локальная панель для рутинных задач 
 
 Панель показывает эти скилы, а не заменяет их: логика по-прежнему живёт в скриптах, панель
 их вызывает по описанию из YAML-шаблона, ведёт состояние на диске, рисует таблицу
-«элемент × шаг» и даёт кнопки Retry/Skip/Abort. Детерминированные действия — в `shell`/`js`-шагах,
+«элемент × шаг» и даёт действия Retry/Skip/Abort (в UI и в CLI). Детерминированные действия — в `shell`/`js`-шагах,
 LLM-агент задействуется только там, где нужен текст или суждение, и никогда не мутирует
 внешние системы напрямую — каждый agent-шаг обязан иметь `verify`.
 
@@ -33,6 +33,10 @@ node bin/runboard.js serve
   человеческий шаг без интерактивного `readline`. Шаг `gamma/flaky` в `hello` всегда падает
   и уходит в паузу — это заложено в шаблон, поэтому команда завершается кодом **2** (запуск
   `paused`), а не 0 — это ожидаемый результат первого запуска, не ошибка.
+- Дальше как с любой паузой: `list` → `show <run>` (колонка info показывает причину, например
+  `exit 2: permanent error: pom.xml broken`), `log <run> gamma flaky` покажет хвост лога,
+  `retry <run> gamma flaky` повторит шаг (в `hello` он упадёт снова — так задумано), а
+  `skip <run> gamma flaky` исключит клетку, после чего запуск доходит до `done`.
 - `serve` поднимает сервер на `127.0.0.1` и печатает URL с одноразовым токеном в фрагменте
   (`#t=...`) — откройте его в браузере.
 
@@ -60,10 +64,29 @@ logs:
 ```
 
 `agent.command` — команда, которой раннер вызывает LLM-агента; раннер не знает, кто внутри.
-На корп ПК это `gigacode`, локально на macOS для разработки — `claude -p ...`. Плейсхолдер
-`{prompt}` подставляется текстом промпта. `agent.readonly_command` используется, когда шаг
-помечен `readonly: true` (например, диагностический шаг в лестнице `on_fail`) — его точный
-флаг (`--approval-mode plan` или другой) нужно проверить на корп ПК, см. чек-лист ниже.
+На корп ПК это `gigacode`, локально на macOS для разработки — `claude -p ...`. Плейсхолдеры:
+`{prompt}` — текст промпта, `{out}` — папка `$OUT` шага, `{ctx}` — папка контекста
+(`notes.md`). `agent.readonly_command` используется, когда шаг помечен `readonly: true`
+(например, диагностический шаг в лестнице `on_fail`) — его точный флаг (`--approval-mode plan`
+или другой) нужно проверить на корп ПК, см. чек-лист ниже.
+
+Агент запускается с `cwd` шага (для `each` — папка проекта), а `$OUT` и `notes.md` лежат
+**вне** этой папки, в `~/.runboard/runs/…`. Headless-агент с ограничением записи «только в
+cwd» на попытке записать `$OUT/result` спросит разрешение, которого некому дать, и шаг
+закончится `NEED_INPUT` или пустым результатом. Поэтому: (1) в промптах просите печатать
+`key=value` в stdout — это всегда работает; (2) если агент умеет расширять список
+разрешённых папок, передайте ему `{out}` и `{ctx}`. Пример для локальной разработки:
+
+```yaml
+agent:
+  command: ["claude", "-p", "{prompt}", "--model", "haiku", "--permission-mode", "acceptEdits", "--add-dir", "{out}", "{ctx}"]
+  readonly_command: ["claude", "-p", "{prompt}", "--model", "haiku", "--permission-mode", "plan"]
+```
+
+`env_file` — обычный `KEY=value`; в шаги попадают только имена из `env:` шага. В логах и
+подставленных командах маскируются значения переменных, чьё имя похоже на секрет
+(`*TOKEN*`, `*PASSWORD*`, `*SECRET*`, `*KEY*`, `*CREDENTIAL*`), — `DEVELOP_BRANCH=develop`
+маскироваться не будет.
 
 ## Шаблоны
 
@@ -77,7 +100,33 @@ resume, retry по клетке, dry-run и валидация. Лежат в `t
   всегда и остаётся в паузе; барьер `succeeded` собирает сводку, пропуская `gamma`. Это
   первое, что стоит запустить — он же smoke-тест панели.
 - `templates/release.yaml` — реальный релиз на скриптах скилла `release`
-  (`git_release.sh`, `jenkins.py`, `confluence_check.sh`).
+  (`git_release.sh`, `jenkins.py`, `confluence_check.sh`). Шаг `publish` рассчитывает на MCP
+  Confluence у агента; без него агент честно ответит `NEED_INPUT`, и шаг останется ждать.
+
+Шаблон снимается в `run.json` при старте: правка YAML не влияет на уже идущий запуск (в том
+числе на `retry` его клеток) — для нового текста нужен новый запуск.
+
+### Параметры и элементы
+
+```yaml
+params:
+  release: { type: string, required: true, label: "Номер релиза", pattern: "^[0-9]+$" }
+  version: { type: string, default: "1.12.0" }     # default подставляется, если параметр не передан
+items:
+  source: dirs        # элементы — подпапки projects_root; передаются через --items a,b (обязательно)
+  # source: manual    # элементы — объекты с полем name: default: [...] в шаблоне, --items a,b или JSON в UI
+```
+
+Пример шага с идемпотентностью: `check` — это команда, важен только её код возврата
+(0 = «уже сделано, тело не запускать»), stdout `check` при этом становится результатом шага:
+
+```yaml
+- name: bump
+  each: true
+  check: git -C "${{ item.dir }}" rev-parse --verify -q feature/bump-commons-text
+  shell: git -C "${{ item.dir }}" checkout -b feature/bump-commons-text && sed -i '' 's#<version>1.9</version>#<version>${{ run.params.version }}</version>#' "${{ item.dir }}/pom.xml" && git -C "${{ item.dir }}" commit -qam "bump commons-text"
+  verify: grep -q "<version>${{ run.params.version }}</version>" "${{ item.dir }}/pom.xml"
+```
 
 ### Поля шага (§4.2)
 
@@ -159,7 +208,10 @@ runs/<id>/
 в `$OUT/result.json` или строками `key=value`; свои выводы дописывать в `notes.md`; вопросов
 не задавать — если нужен ответ человека, завершить работу строкой `NEED_INPUT=<вопрос>`.
 `NEED_INPUT` панель превращает в `human`-шаг, ответ дописывается в `notes.md`, шаг
-повторяется. `notes.md` можно редактировать из UI (подсказка агенту перед retry).
+повторяется. После трёх `NEED_INPUT` подряд на одной клетке она уходит в паузу (агент
+явно не может продолжить — нужен человек, `retry` сбрасывает счётчик). `notes.md` можно
+редактировать из UI (подсказка агенту перед retry). Строки `key=value` распознаются и в
+markdown-обёртке (`**key=value**`, `` - `key=value` ``), что прощает слабым моделям оформление.
 
 ## CLI
 
@@ -171,20 +223,54 @@ runboard render <template> --step S [--item I]        показать подс�
 runboard run <template> --param k=v --items a,b --mode all|pilot [--dry-run] [--yes] [--answer TEXT]
 runboard list                                         список запусков
 runboard show <run>                                   таблица элемент × шаг для запуска
+runboard log <run> <item|_> <step> [--kind K] [--bytes N]   хвост лога последней попытки клетки (K: log|check|verify|diagnose|diff)
 runboard retry <run> <item|_> <step>                  повторить клетку (_ — once-шаг)
-runboard answer <run> <item|_|__pilot__> <step|-> TEXT [--wait N]   ответить на human-шаг/пилота
+runboard skip <run> <item|_> <step>                   пропустить клетку (барьеры её не ждут)
+runboard abort <run> [item]                           прервать запуск целиком или исключить один элемент
+runboard answer <run> <item|_|__pilot__> <step|-> TEXT [--wait N]   ответить на human-шаг, вопрос агента или пилота
 runboard clean [--days N]                              удалить старые запуски (retention_days по умолчанию)
 runboard serve [--port P]                              поднять сервер на 127.0.0.1, напечатать URL с токеном
 ```
 
-Если `runboard serve` уже запущен, команды `run`/`retry`/`answer` идут через его API (не
-создают второй движок); иначе выполняются в собственном процессе под instance lock'ом, чтобы
-не пересекаться с работающим сервером.
+`run`/`retry`/`skip`/`answer` без сервера выполняют движок прямо в этом процессе и ждут, пока
+запуск не остановится: `done`, пауза или вопрос человеку. Вопрос задаётся в терминале;
+`--answer TEXT` отвечает им заранее (на human-шаги и на вопрос пилота, но **не** на
+`NEED_INPUT` агента — там нужен осмысленный ответ). Без терминала (cron, CI, пайп) команда не
+ждёт ввода, а печатает вопрос и готовую команду `runboard answer …` и завершается кодом 2.
 
-Коды возврата: **0** — запуск дошёл до `done`; **2** — запуск завершился в состоянии
-`paused`/`failed`/`aborted` (например, шаг ушёл в паузу — как `gamma` в `hello`); **1** —
-ошибка выполнения команды (не найден шаблон/запуск и т. п.); **3** — шаблон не прошёл
-проверку доверия и нужен `--yes`.
+`--dry-run` показывает подставленные команды всех клеток без запуска; результаты ещё не
+выполненных шагов выводятся плейсхолдерами: `${{ item.steps.branch.commit }}` → `@branch.commit`.
+
+Если `runboard serve` уже запущен, команды `run`/`retry`/`skip`/`abort`/`answer` идут через его
+API (не создают второй движок); иначе выполняются в собственном процессе под instance lock'ом,
+чтобы не пересекаться с работающим сервером.
+
+Коды возврата `run`/`retry`/`skip`/`abort`/`answer`: **0** — запуск дошёл до `done`; **2** —
+запуск остановился, не дойдя до `done` (пауза, вопрос человеку, `aborted`); **1** — ошибка
+самой команды (не найден шаблон/запуск, неверные параметры); **3** — шаблон не прошёл
+проверку доверия и нужен `--yes`. `show`, `list`, `log` возвращают 0: они показывают состояние,
+а не оценивают его.
+
+### HTTP API
+
+Все запросы — с заголовком `X-Runboard-Token: <токен из ~/.runboard/token>`, `Host` должен быть
+`127.0.0.1:<port>`. Тела — JSON. Действия возвращают `204`, ошибки — `{ "error": "…" }`.
+
+| Метод и путь | Назначение |
+|---|---|
+| `GET /api/templates` | шаблоны с параметрами, `hash` и флагом `trusted` |
+| `POST /api/templates/:name/trust` `{hash}` | подтвердить доверие |
+| `POST /api/templates/:name/preview` `{params, items}` | то же, что `--dry-run` |
+| `GET /api/projects` | подпапки `projects_root` (git-репозитории или maven-модули) |
+| `GET /api/runs`, `GET /api/runs/:id` | список запусков; полный `run.json` |
+| `POST /api/runs` `{template, params, items, mode}` | создать запуск → `201 {id}`; `409 {needsTrust, hash, commands}` если шаблон не подтверждён |
+| `GET /api/runs/:id/log?item=<name|_>&step=S&seq=N[&kind=K][&bytes=N]` | хвост лога клетки (`seq` — из `run.json`) |
+| `GET/PUT /api/runs/:id/context?item=<name|_>` | `notes.md` и результаты шагов; `PUT {notes}` перезаписывает заметки |
+| `POST /api/runs/:id/render` `{item, step}` | подставленная команда клетки живого запуска |
+| `POST /api/runs/:id/cells/:item/:step/retry` · `/skip` | действия над клеткой (`_` — once-шаг) |
+| `POST /api/runs/:id/items/:item/abort` | исключить элемент |
+| `POST /api/runs/:id/answer` `{item, step, answer, fields}` | ответ на human-шаг или `NEED_INPUT`; пилот: `item: "__pilot__", step: null` |
+| `POST /api/runs/:id/pause` · `/resume` · `/abort` | пауза/продолжение/прерывание запуска |
 
 ## Чек-лист перед запуском на корп ПК
 

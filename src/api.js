@@ -6,9 +6,8 @@ import * as store from './engine/store.js';
 import { NeedsTrust } from './engine/manager.js';
 import { render } from './expr.js';
 import { previewRows } from './preview.js';
-import { createMasker } from './secrets.js';
+import { createMasker, secretValues } from './secrets.js';
 
-const LOG_KINDS = ['log', 'check', 'verify', 'diagnose', 'diff'];
 const MIN_BYTES = 1;
 const MAX_BYTES = 1_000_000;
 const DEFAULT_BYTES = 65536;
@@ -60,15 +59,11 @@ export function createApp(opts) {
     if (!t) return res.status(404).json({ error: 'template not found' });
     const { params = {}, items = [] } = req.body || {};
     try {
-      const rows = previewRows(manager, t, { params, items }, createMasker(Object.values(manager.envValues || {})));
+      const rows = previewRows(manager, t, { params, items }, createMasker(secretValues(manager.envValues)));
       res.json({ rows });
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
-  app.get('/api/projects', (req, res) => {
-    const root = manager.config.projects_root;
-    if (!fs.existsSync(root)) return res.json([]);
-    res.json(fs.readdirSync(root).filter((n) => fs.existsSync(path.join(root, n, '.git')) || fs.existsSync(path.join(root, n, 'pom.xml'))).sort());
-  });
+  app.get('/api/projects', (req, res) => res.json(manager.listProjects()));
 
   app.get('/api/runs', (req, res) => res.json(manager.list()));
   app.post('/api/runs', async (req, res) => {
@@ -86,20 +81,14 @@ export function createApp(opts) {
     const r = run(req, res); if (!r) return;
     const { item, step, seq, kind = 'log' } = req.query;
     if (!/^\d+$/.test(String(seq))) return res.status(400).json({ error: 'invalid seq' });
-    if (!LOG_KINDS.includes(kind)) return res.status(400).json({ error: 'invalid kind' });
+    if (!store.LOG_KINDS.includes(kind)) return res.status(400).json({ error: 'invalid kind' });
     let bytes = Number.parseInt(req.query.bytes, 10);
     if (!Number.isFinite(bytes) || bytes < MIN_BYTES) bytes = DEFAULT_BYTES;
-    bytes = Math.min(bytes, MAX_BYTES);
-    const p = store.paths(r, itemName(item || '_'));
-    const ext = kind === 'log' ? 'log' : kind === 'diff' ? 'diff' : `${kind}.log`;
-    const file = p.logPath(step, seq).replace(/\.log$/, `.${ext}`);
-    const resolvedFile = path.resolve(file);
-    const resolvedDir = `${path.resolve(p.logsDir)}${path.sep}`;
-    if (!resolvedFile.startsWith(resolvedDir)) return res.status(400).json({ error: 'invalid path' });
+    const file = store.logFile(r, itemName(item || '_'), step, seq, kind);
+    const logsDir = `${path.resolve(store.paths(r, itemName(item || '_')).logsDir)}${path.sep}`;
+    if (!path.resolve(file).startsWith(logsDir)) return res.status(400).json({ error: 'invalid path' });
     if (!fs.existsSync(file)) return res.status(404).json({ error: 'no log' });
-    const size = fs.statSync(file).size; const start = Math.max(0, size - bytes);
-    const fd = fs.openSync(file, 'r'); const buf = Buffer.alloc(size - start); fs.readSync(fd, buf, 0, buf.length, start); fs.closeSync(fd);
-    res.type('text/plain').send((start ? `[…${start} bytes skipped]\n` : '') + buf.toString('utf8'));
+    res.type('text/plain').send(store.tailFile(file, Math.min(bytes, MAX_BYTES)));
   });
   app.get('/api/runs/:id/context', (req, res) => {
     const r = run(req, res); if (!r) return;

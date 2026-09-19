@@ -29,6 +29,7 @@ test('shell: renders, passes whitelisted env + OUT, parses keys, masks', async (
 test('shell: non-zero exit, timeout, unsafe substitution, git guard', async () => {
   const r = rctx();
   assert.equal((await shell.run({ name: 's', shell: 'exit 4' }, r)).error, 'exit 4');
+  assert.equal((await shell.run({ name: 's', shell: 'echo step one; echo pom.xml broken >&2; exit 5' }, r)).error, 'exit 5: pom.xml broken');
   const t = await shell.run({ name: 's', shell: 'sleep 5' }, { ...r, timeout: 1 });
   assert.equal(t.timedOut, true); assert.match(t.error, /timeout/);
   const u = await shell.run({ name: 's', shell: 'echo ${{ item.name }}' }, { ...r, exprCtx: { item: { name: 'a;b' } } });
