@@ -74,3 +74,64 @@ test('templates, projects, trust flow, run lifecycle over HTTP', async () => {
   assert.equal((await api('/runs/nope')).status, 404);
   assert.equal((await (await api('/runs')).json())[0].id, id);
 });
+
+test('log route rejects path traversal in seq, kind and run id', async () => {
+  let r = await api('/runs', { method: 'POST', body: JSON.stringify({ template: 'demo', items: ['p1'] }) });
+  const { id } = await r.json();
+  await manager.engine(id).idle();
+  assert.equal((await api(`/runs/${id}/log?item=p1&step=s&seq=..%2Fx`)).status, 400);
+  assert.equal((await api(`/runs/${id}/log?item=p1&step=s&seq=1&kind=..%2F..%2Fetc`)).status, 400);
+  assert.equal((await api('/runs/..%2Fx')).status, 404);
+});
+
+test('log bytes is clamped to a safe range; malformed JSON body yields a clean 400', async () => {
+  let r = await api('/runs', { method: 'POST', body: JSON.stringify({ template: 'demo', items: ['p1'] }) });
+  const { id } = await r.json();
+  await manager.engine(id).idle();
+  fs.writeFileSync(paths(manager.get(id), 'p1').logPath('s', 1), 'line1\nline2\n');
+  let lr = await api(`/runs/${id}/log?item=p1&step=s&seq=1&bytes=abc`);
+  assert.equal(lr.status, 200);
+  assert.equal(await lr.text(), 'line1\nline2\n');
+  lr = await api(`/runs/${id}/log?item=p1&step=s&seq=1&bytes=-1`);
+  assert.equal(lr.status, 200);
+  assert.equal(await lr.text(), 'line1\nline2\n');
+
+  const bad = await fetch(`${srv.url}/api/runs`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-runboard-token': srv.token }, body: '{not json' });
+  assert.equal(bad.status, 400);
+  const body = await bad.json();
+  assert.ok(body.error);
+  assert.ok(!body.error.includes('node_modules'));
+});
+
+test('template preview returns a rendered (engine-free) row per item x step', async () => {
+  const r = await api('/templates/demo/preview', { method: 'POST', body: JSON.stringify({ params: {}, items: ['p1'] }) });
+  assert.equal(r.status, 200);
+  const { rows } = await r.json();
+  assert.ok(rows.some((row) => row.item === 'p1' && row.step === 's' && row.command === 'echo hi'));
+  assert.ok(rows.some((row) => row.item === 'p1' && row.step === 'ask'));
+});
+
+test('render masks secret env values', async () => {
+  const home2 = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-api-mask-'));
+  const tdir2 = path.join(home2, 'templates'); fs.mkdirSync(tdir2);
+  fs.writeFileSync(path.join(tdir2, 'secret.yaml'), 'name: secret\nitems: { source: manual, default: [{ name: p1 }] }\nsteps:\n  - { name: s, each: true, env: [SECRET], shell: "echo ${{ run.env.SECRET }}" }\n');
+  const cfg2 = loadConfig(home2);
+  const fake2 = fakeRunner({});
+  const manager2 = new Manager({ home: home2, config: cfg2, runners: { shell: fake2, js: fake2, agent: fake2, human }, envValues: { SECRET: 'sekrit-value-123' }, templateDirs: [tdir2] });
+  await manager2.init();
+  const srv2 = await startServer({ home: home2, config: cfg2, manager: manager2, port: 0 });
+  try {
+    const api2 = (p, opts = {}) => fetch(`${srv2.url}/api${p}`, { ...opts, headers: { 'content-type': 'application/json', 'x-runboard-token': srv2.token, ...(opts.headers || {}) } });
+    const tpls = await (await api2('/templates')).json();
+    const hash = tpls.templates[0].hash;
+    await api2('/templates/secret/trust', { method: 'POST', body: JSON.stringify({ hash }) });
+    const r = await api2('/runs', { method: 'POST', body: JSON.stringify({ template: 'secret', items: ['p1'] }) });
+    const { id } = await r.json();
+    await manager2.engine(id).idle();
+    const rend = await (await api2(`/runs/${id}/render`, { method: 'POST', body: JSON.stringify({ item: 'p1', step: 's' }) })).json();
+    assert.match(rend.command, /\*\*\*/);
+    assert.ok(!rend.command.includes('sekrit-value-123'));
+  } finally {
+    srv2.server.close();
+  }
+});

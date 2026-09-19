@@ -222,7 +222,8 @@ export class Engine extends EventEmitter {
       if (this.run.status === 'aborted') return;
       const res = await this.runners[bodyKind(step)].run(step, r);
       if (this.run.status === 'aborted') return;
-      c.command = res.command || c.command; c.pid = null;
+      if (res.command) c.command = this.masker.mask(res.command);
+      c.pid = null;
       if (res.waiting) { c.status = 'waiting'; c.waiting = res.waiting; c.needInput = false; this.changed({ type: 'cell.waiting', item: item?.name, step: step.name }); return; }
       if (res.needInput) { c.status = 'waiting'; c.waiting = { question: res.needInput, options: [], fields: ['answer'] }; c.needInput = true; this.changed({ type: 'cell.need_input', item: item?.name, step: step.name }); return; }
       if (!res.ok) {

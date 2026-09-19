@@ -41,3 +41,24 @@ test('init, doctor, validate, render, dry-run and a real hello run', () => {
   r = sh(['show', id], env);
   assert.match(r.out, /gamma +flaky +paused/);
 });
+
+test('run --dry-run never attaches an engine: a run.json with a running cell is left byte-identical', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-cli-dry-'));
+  const env = { RUNBOARD_HOME: home };
+  sh(['init'], env);
+  let r = sh(['run', 'hello', '--yes', '--answer', 'Да'], env);
+  assert.equal(r.code, 2, r.out);
+  const id = r.out.match(/(\d{8}-\d{6}-\w{4})/)[1];
+  const file = path.join(home, 'runs', id, 'run.json');
+  const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+  j.status = 'running';
+  j.cells.alpha.greet.status = 'running';
+  fs.writeFileSync(file, JSON.stringify(j, null, 1));
+  const before = fs.readFileSync(file, 'utf8');
+
+  r = sh(['run', 'hello', '--dry-run'], env);
+  assert.equal(r.code, 0, r.out);
+
+  const after = fs.readFileSync(file, 'utf8');
+  assert.equal(after, before);
+});

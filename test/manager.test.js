@@ -51,6 +51,24 @@ test('init recovers unfinished runs from disk', async () => {
   assert.equal(m2.list()[0].id, run.id);
 });
 
+test('init({recover:false}) loads templates but never attaches or recovers unfinished runs', async () => {
+  const { m, home } = setup();
+  await m.init();
+  m.trust('demo', m.templates.get('demo').hash);
+  const run = await m.create({ templateName: 'demo', params: { n: '1' }, items: ['p1'] });
+  await m.engine(run.id).idle();
+  const file = path.join(run.dir, 'run.json');
+  const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+  j.status = 'running'; j.cells.p1.s.status = 'running'; j.cells.p1.s.pid = null;
+  fs.writeFileSync(file, JSON.stringify(j));
+
+  const m2 = new Manager({ home, config: m.config, runners: m.runners, envValues: {}, templateDirs: m.templateDirs });
+  await m2.init({ recover: false });
+  assert.ok(m2.templates.has('demo'));
+  assert.equal(m2.engines.size, 0);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).cells.p1.s.status, 'running');
+});
+
 test('templateCommands lists a js step\'s sidecar script', async () => {
   const { m } = setup();
   fs.writeFileSync(path.join(m.templateDirs[0], 'demo2.yaml'), 'name: demo2\nsteps:\n  - { name: r, once: true, js: ./demo2/report.js }\n');

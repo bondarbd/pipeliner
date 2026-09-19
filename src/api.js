@@ -1,9 +1,24 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import * as store from './engine/store.js';
 import { NeedsTrust } from './engine/manager.js';
 import { render } from './expr.js';
+import { previewRows } from './preview.js';
+import { createMasker } from './secrets.js';
+
+const LOG_KINDS = ['log', 'check', 'verify', 'diagnose', 'diff'];
+const MIN_BYTES = 1;
+const MAX_BYTES = 1_000_000;
+const DEFAULT_BYTES = 65536;
+
+function tokensEqual(a, b) {
+  const bufA = Buffer.from(String(a ?? ''));
+  const bufB = Buffer.from(String(b ?? ''));
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
 export function createApp(opts) {
   const { manager, token, publicDir } = opts;
@@ -16,10 +31,12 @@ export function createApp(opts) {
     if (origin && origin !== `http://127.0.0.1:${opts.port}`) return res.status(403).send('forbidden origin');
     next();
   });
-  app.use('/api', express.json({ limit: '2mb' }), (req, res, next) => {
-    if (req.headers['x-runboard-token'] !== token) return res.status(401).json({ error: 'missing or invalid token' });
+  // Token check first (cheap, timing-safe, no body parsing yet), then JSON parsing.
+  app.use('/api', (req, res, next) => {
+    if (!tokensEqual(req.headers['x-runboard-token'], token)) return res.status(401).json({ error: 'missing or invalid token' });
     next();
   });
+  app.use('/api', express.json({ limit: '2mb' }));
   if (publicDir) app.use(express.static(publicDir));
 
   const run = (req, res) => { const r = manager.get(req.params.id); if (!r) res.status(404).json({ error: 'run not found' }); return r; };
@@ -33,6 +50,15 @@ export function createApp(opts) {
     res.json({ templates, errors: manager.templateErrors });
   });
   app.post('/api/templates/:name/trust', act((req) => manager.trust(req.params.name, req.body.hash)));
+  app.post('/api/templates/:name/preview', (req, res) => {
+    const t = manager.templates.get(req.params.name);
+    if (!t) return res.status(404).json({ error: 'template not found' });
+    const { params = {}, items = [] } = req.body || {};
+    try {
+      const rows = previewRows(manager, t, { params, items }, createMasker(Object.values(manager.envValues || {})));
+      res.json({ rows });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
   app.get('/api/projects', (req, res) => {
     const root = manager.config.projects_root;
     if (!fs.existsSync(root)) return res.json([]);
@@ -53,12 +79,20 @@ export function createApp(opts) {
   app.get('/api/runs/:id', (req, res) => { const r = run(req, res); if (r) res.json(r); });
   app.get('/api/runs/:id/log', (req, res) => {
     const r = run(req, res); if (!r) return;
-    const { item, step, seq, kind = 'log', bytes = 65536 } = req.query;
+    const { item, step, seq, kind = 'log' } = req.query;
+    if (!/^\d+$/.test(String(seq))) return res.status(400).json({ error: 'invalid seq' });
+    if (!LOG_KINDS.includes(kind)) return res.status(400).json({ error: 'invalid kind' });
+    let bytes = Number.parseInt(req.query.bytes, 10);
+    if (!Number.isFinite(bytes) || bytes < MIN_BYTES) bytes = DEFAULT_BYTES;
+    bytes = Math.min(bytes, MAX_BYTES);
     const p = store.paths(r, itemName(item || '_'));
     const ext = kind === 'log' ? 'log' : kind === 'diff' ? 'diff' : `${kind}.log`;
     const file = p.logPath(step, seq).replace(/\.log$/, `.${ext}`);
+    const resolvedFile = path.resolve(file);
+    const resolvedDir = `${path.resolve(p.logsDir)}${path.sep}`;
+    if (!resolvedFile.startsWith(resolvedDir)) return res.status(400).json({ error: 'invalid path' });
     if (!fs.existsSync(file)) return res.status(404).json({ error: 'no log' });
-    const size = fs.statSync(file).size; const start = Math.max(0, size - Number(bytes));
+    const size = fs.statSync(file).size; const start = Math.max(0, size - bytes);
     const fd = fs.openSync(file, 'r'); const buf = Buffer.alloc(size - start); fs.readSync(fd, buf, 0, buf.length, start); fs.closeSync(fd);
     res.type('text/plain').send((start ? `[…${start} bytes skipped]\n` : '') + buf.toString('utf8'));
   });
@@ -81,7 +115,8 @@ export function createApp(opts) {
       const ctx = e ? e.exprCtx(it, s) : null;
       if (!ctx) return res.status(409).json({ error: 'run is not live' });
       const body = s.shell ?? s.check ?? s.verify ?? s.agent?.prompt ?? s.human?.question ?? s.js;
-      res.json({ command: render(body, ctx, { shell: !!s.shell && !s.raw }) });
+      const rendered = render(body, ctx, { shell: !!s.shell && !s.raw });
+      res.json({ command: e.masker.mask(String(rendered)) });
     } catch (err) { res.status(400).json({ error: err.message }); }
   });
   app.post('/api/runs/:id/cells/:item/:step/retry', act((req, res) => { const e = eng(req, res); if (e) e.retry(itemName(req.params.item), req.params.step); }));
@@ -91,5 +126,11 @@ export function createApp(opts) {
   app.post('/api/runs/:id/pause', act((req, res) => { const e = eng(req, res); if (e) e.pauseRun(); }));
   app.post('/api/runs/:id/resume', act((req, res) => { const e = eng(req, res); if (e) e.resumeRun(); }));
   app.post('/api/runs/:id/abort', act(async (req, res) => { const e = eng(req, res); if (e) await e.abort('aborted by user'); }));
+
+  // Terminal error handler: never leak a stack trace (or express's default HTML
+  // error page, which can echo file paths from node_modules) to the client.
+  app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+    res.status(err.status || err.statusCode || 500).json({ error: err.message });
+  });
   return app;
 }

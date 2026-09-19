@@ -5,13 +5,15 @@ import readline from 'node:readline';
 import { execFileSync } from 'node:child_process';
 import { loadConfig, loadEnvFile, DEFAULTS } from '../config.js';
 import { readTemplate, loadTemplates } from '../template/load.js';
-import { validateTemplate, bodyKind } from '../template/validate.js';
+import { validateTemplate } from '../template/validate.js';
 import { Manager, NeedsTrust } from '../engine/manager.js';
 import { defaultRunners } from '../runners/index.js';
-import { render } from '../expr.js';
 import { buildCtx } from '../engine/context.js';
 import * as store from '../engine/store.js';
 import { isAlive } from '../engine/proc.js';
+import { instanceLock, LockBusy } from '../engine/locks.js';
+import { createMasker } from '../secrets.js';
+import { previewItems, previewRows, bodyText } from '../preview.js';
 import { table } from './table.js';
 
 export const PKG_ROOT = path.resolve(new URL('../..', import.meta.url).pathname);
@@ -22,6 +24,14 @@ async function manager(io) {
   await m.init();
   return m;
 }
+// Used by commands that must never attach or recover engines (render, run --dry-run):
+// only templates are loaded, run.json files on disk are left untouched.
+async function readOnlyManager(io) {
+  const m = new Manager({ home: io.home, config: io.config, runners: await defaultRunners(), envValues: loadEnvFile(io.config.env_file), templateDirs: templateDirs(io.home) });
+  await m.init({ recover: false });
+  return m;
+}
+function maskerFor(io) { return createMasker(Object.values(loadEnvFile(io.config.env_file))); }
 function liveServer(home) {
   try { const s = JSON.parse(fs.readFileSync(path.join(home, 'server.json'), 'utf8')); return isAlive(s.pid) ? s : null; } catch { return null; }
 }
@@ -33,6 +43,27 @@ async function api(io, method, p, body) {
   const j = await res.json();
   if (!res.ok) throw Object.assign(new Error(j.error || `HTTP ${res.status}`), { payload: j });
   return j;
+}
+// Guards an in-process (non-server-delegated) command that mutates run state:
+// takes the instance lock so it never races with a live `runboard serve`.
+async function withInstanceLock(io, fn) {
+  let lock;
+  try { lock = instanceLock(io.home); }
+  catch (e) {
+    if (e instanceof LockBusy) { io.out(`runboard serve is running (${e.owner}) — use the server`); return 1; }
+    throw e;
+  }
+  try { return await fn(); }
+  finally { lock.release(); }
+}
+async function serverFollowOnce(io, id, waitSeconds = 0) {
+  let r = await api(io, 'GET', `/runs/${id}`);
+  const until = Date.now() + Math.max(0, waitSeconds) * 1000;
+  while ((r.status === 'running' || r.status === 'waiting_for_human') && Date.now() < until) {
+    await new Promise((res) => setTimeout(res, 1000));
+    r = await api(io, 'GET', `/runs/${id}`);
+  }
+  return r;
 }
 
 export async function init(args, io) {
@@ -83,24 +114,11 @@ export async function validate(args, io) {
   return 0;
 }
 
-function previewRun(m, t, args) {
-  const items = m.resolveItems(t.tpl, args.items ? args.items.split(',') : (t.tpl.items?.default || []));
-  const fakeRun = { id: 'dry', dir: path.join(m.home, 'runs', 'dry'), templateDir: t.dir, params: args.params, items: items.map((i) => ({ status: 'active', ...i })), cells: {}, once: {}, steps: t.tpl.steps };
-  return { items, fakeRun };
-}
-const bodyText = (s, ctx, shellSafe = true) => {
-  const k = bodyKind(s);
-  if (k === 'shell') return render(s.shell, ctx, { shell: shellSafe && !s.raw });
-  if (k === 'js') return `js: ${s.js}`;
-  if (k === 'agent') return `agent: ${render(s.agent.prompt, ctx).split('\n')[0]}`;
-  return `human: ${render(s.human.question, ctx)}`;
-};
-
 export async function renderCmd(args, io) {
-  const m = await manager(io);
+  const m = await readOnlyManager(io);
   const t = m.templates.get(args._[0]); if (!t) { io.err(`template not found: ${args._[0]}`); return 1; }
   const step = t.tpl.steps.find((s) => s.name === args.step); if (!step) { io.err(`step not found: ${args.step}`); return 1; }
-  const { items, fakeRun } = previewRun(m, t, args);
+  const { items, fakeRun } = previewItems(m, t, { params: args.params, items: args.items ? args.items.split(',') : [] });
   const item = step.each ? items.find((i) => i.name === args.item) || items[0] : null;
   try { io.out(bodyText(step, buildCtx({ run: fakeRun, item, config: m.config, env: {} }))); return 0; }
   catch (e) { io.err(e.message); return 1; }
@@ -139,34 +157,49 @@ async function followEngine(e, io) {
 export async function run(args, io) {
   const name = args._[0];
   if (liveServer(io.home) && !args['dry-run']) {
-    try {
-      const { id } = await api(io, 'POST', '/runs', { template: name, params: args.params, items: args.items ? args.items.split(',') : [], mode: args.mode || 'all' });
-      io.out(`started ${id} (server)`); return 0;
-    } catch (e) {
-      if (e.payload?.needsTrust) { if (!args.yes) { io.out(`template ${name} is not trusted. Commands:\n  ${e.payload.commands.join('\n  ')}\nre-run with --yes to trust`); return 3; } await api(io, 'POST', `/templates/${name}/trust`, { hash: e.payload.hash }); return run(args, io); }
-      io.err(e.message); return 1;
+    for (;;) {
+      try {
+        const { id } = await api(io, 'POST', '/runs', { template: name, params: args.params, items: args.items ? args.items.split(',') : [], mode: args.mode || 'all' });
+        io.out(`started ${id} (server)`); return 0;
+      } catch (e) {
+        if (e.payload?.needsTrust) {
+          if (!args.yes) { io.out(`template ${name} is not trusted. Commands:\n  ${e.payload.commands.join('\n  ')}\nre-run with --yes to trust`); return 3; }
+          await api(io, 'POST', `/templates/${name}/trust`, { hash: e.payload.hash });
+          continue;
+        }
+        io.err(e.message); return 1;
+      }
     }
   }
-  const m = await manager(io);
-  const t = m.templates.get(name); if (!t) { io.err(`template not found: ${name}`); return 1; }
   if (args['dry-run']) {
-    const { items, fakeRun } = previewRun(m, t, args); const rows = [];
-    for (const s of t.tpl.steps) {
-      const targets = s.once ? [null] : items;
-      for (const it of targets) { try { rows.push([it ? it.name : '*', s.name, bodyText(s, buildCtx({ run: fakeRun, item: it, config: m.config, env: {} }))]); } catch (e) { rows.push([it ? it.name : '*', s.name, `ERROR ${e.message}`]); } }
-    }
+    const m = await readOnlyManager(io);
+    const t = m.templates.get(name); if (!t) { io.err(`template not found: ${name}`); return 1; }
+    const rows = previewRows(m, t, { params: args.params, items: args.items ? args.items.split(',') : [] }, maskerFor(io))
+      .map((r) => [r.item, r.step, r.command]);
     io.out(table(rows, ['item', 'step', 'command'])); return rows.some((r) => r[2].startsWith('ERROR')) ? 1 : 0;
   }
-  let created;
-  try { created = await m.create({ templateName: name, params: args.params, items: args.items ? args.items.split(',') : [], mode: args.mode || 'all', initiator: { via: 'cli', user: os.userInfo().username } }); }
-  catch (e) {
-    if (e instanceof NeedsTrust) { if (!args.yes) { io.out(`template ${name} is not trusted. Commands:\n  ${e.commands.join('\n  ')}\nre-run with --yes to trust`); return 3; } m.trust(name, e.hash); return run(args, io); }
-    io.err(e.message); return 1;
-  }
-  io.out(`started ${created.id}`);
-  const final = await followEngine(m.engine(created.id), io);
-  printRun(final, io);
-  return exitFor(final);
+  return withInstanceLock(io, async () => {
+    const m = await manager(io);
+    const t = m.templates.get(name); if (!t) { io.err(`template not found: ${name}`); return 1; }
+    let created;
+    for (;;) {
+      try {
+        created = await m.create({ templateName: name, params: args.params, items: args.items ? args.items.split(',') : [], mode: args.mode || 'all', initiator: { via: 'cli', user: os.userInfo().username } });
+        break;
+      } catch (e) {
+        if (e instanceof NeedsTrust) {
+          if (!args.yes) { io.out(`template ${name} is not trusted. Commands:\n  ${e.commands.join('\n  ')}\nre-run with --yes to trust`); return 3; }
+          m.trust(name, e.hash);
+          continue;
+        }
+        io.err(e.message); return 1;
+      }
+    }
+    io.out(`started ${created.id}`);
+    const final = await followEngine(m.engine(created.id), io);
+    printRun(final, io);
+    return exitFor(final);
+  });
 }
 
 export async function list(args, io) {
@@ -180,29 +213,45 @@ export async function show(args, io) {
 }
 export async function retry(args, io) {
   const [id, item, step] = args._;
-  if (liveServer(io.home)) { await api(io, 'POST', `/runs/${id}/cells/${item}/${step}/retry`); io.out('retry requested (server)'); return 0; }
-  const m = await manager(io); const e = m.engine(id); if (!e) { io.err('run is finished or unknown'); return 1; }
-  e.retry(item === '_' ? null : item, step);
-  const final = await followEngine(e, io); printRun(final, io); return exitFor(final);
+  if (liveServer(io.home)) {
+    await api(io, 'POST', `/runs/${id}/cells/${item}/${step}/retry`);
+    const r = await serverFollowOnce(io, id, args.wait ? Number(args.wait) : 0);
+    printRun(r, io); return exitFor(r);
+  }
+  return withInstanceLock(io, async () => {
+    const m = await manager(io); const e = m.engine(id); if (!e) { io.err('run is finished or unknown'); return 1; }
+    e.retry(item === '_' ? null : item, step);
+    const final = await followEngine(e, io); printRun(final, io); return exitFor(final);
+  });
 }
 export async function answer(args, io) {
   const [id, item, step, ...rest] = args._; const a = rest.join(' ');
-  if (liveServer(io.home)) { await api(io, 'POST', `/runs/${id}/answer`, { item, step: step === '-' ? null : step, answer: a }); io.out('answer sent (server)'); return 0; }
-  const m = await manager(io); const e = m.engine(id); if (!e) { io.err('run is finished or unknown'); return 1; }
-  e.answer(item === '_' ? null : item, step === '-' ? null : step, { answer: a });
-  const final = await followEngine(e, io); printRun(final, io); return exitFor(final);
+  if (liveServer(io.home)) {
+    await api(io, 'POST', `/runs/${id}/answer`, { item, step: step === '-' ? null : step, answer: a });
+    const r = await serverFollowOnce(io, id, args.wait ? Number(args.wait) : 0);
+    printRun(r, io); return exitFor(r);
+  }
+  return withInstanceLock(io, async () => {
+    const m = await manager(io); const e = m.engine(id); if (!e) { io.err('run is finished or unknown'); return 1; }
+    e.answer(item === '_' ? null : item, step === '-' ? null : step, { answer: a });
+    const final = await followEngine(e, io); printRun(final, io); return exitFor(final);
+  });
 }
 export async function clean(args, io) {
-  const m = await manager(io); io.out(`removed ${m.clean(args.days ? Number(args.days) : undefined)} runs`); return 0;
+  return withInstanceLock(io, async () => {
+    const m = await manager(io); io.out(`removed ${m.clean(args.days ? Number(args.days) : undefined)} runs`); return 0;
+  });
 }
 export async function serve(args, io) {
   const { startServer } = await import('../server.js');
-  const { instanceLock } = await import('../engine/locks.js');
   const lock = instanceLock(io.home);
   const m = await manager(io);
   const s = await startServer({ home: io.home, config: io.config, manager: m, port: args.port ? Number(args.port) : undefined });
   io.out(`runboard listening on ${s.url}/#t=${s.token}`);
-  const stop = () => { s.server.close(); lock.release(); process.exit(0); };
+  const stop = () => {
+    s.server.close(() => { lock.release(); process.exit(0); });
+    setTimeout(() => process.exit(0), 2000).unref();
+  };
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
   return new Promise(() => {});
 }

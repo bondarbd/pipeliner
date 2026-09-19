@@ -5,7 +5,7 @@ import { createApp } from './api.js';
 
 export function readToken(home) {
   const f = path.join(home, 'token');
-  if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8').trim();
+  if (fs.existsSync(f)) { fs.chmodSync(f, 0o600); return fs.readFileSync(f, 'utf8').trim(); }
   const t = crypto.randomBytes(24).toString('base64url');
   fs.mkdirSync(home, { recursive: true, mode: 0o700 });
   fs.writeFileSync(f, t, { mode: 0o600 });

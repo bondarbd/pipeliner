@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 
 export function runsDir(home) { return path.join(home, 'runs'); }
 const safe = (s) => String(s).replace(/[^A-Za-z0-9._-]/g, '_');
+export const VALID_ID = /^[A-Za-z0-9._-]+$/;
 
 export function newRunId() {
   const d = new Date();
@@ -76,6 +77,7 @@ export function saveRun(run) {
 }
 
 export function loadRun(home, id) {
+  if (!VALID_ID.test(id)) throw new Error(`invalid run id: ${id}`);
   return JSON.parse(fs.readFileSync(path.join(runsDir(home), id, 'run.json'), 'utf8'));
 }
 

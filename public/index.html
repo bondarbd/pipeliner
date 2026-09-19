@@ -54,13 +54,22 @@
       <label>Режим <select v-model="form.mode"><option v-for="m in sel.modes" :value="m">{{ m==='pilot' ? 'пилот → подтверждение → остальные' : 'все параллельно' }}</option></select></label>
       <div v-if="trust" class="banner"><b>Шаблон изменился или запускается впервые.</b> Команды:
         <pre>{{ trust.commands.join('\n') }}</pre><button @click="doTrust">Подтвердить и запустить</button></div>
+      <button class="secondary outline" @click="preview" :disabled="busy">Проверить</button>
       <button @click="launch" :disabled="busy">Запустить</button>
+      <table class="grid" v-if="previewRows.length"><thead><tr><th>элемент</th><th>шаг</th><th>команда</th></tr></thead>
+        <tbody><tr v-for="(row, i) in previewRows" :key="i"><td>{{ row.item }}</td><td>{{ row.step }}</td><td><code>{{ row.command }}</code></td></tr></tbody></table>
     </article>
   </section>
 
   <section v-if="view==='runs'">
+    <p>
+      <label style="display:inline-block;margin-right:1rem">шаблон
+        <select v-model="runsFilter.template"><option value="">все</option><option v-for="t in runTemplates" :key="t" :value="t">{{ t }}</option></select></label>
+      <label style="display:inline-block">статус
+        <select v-model="runsFilter.status"><option value="">все</option><option v-for="s in runStatuses" :key="s" :value="s">{{ s }}</option></select></label>
+    </p>
     <table class="grid"><thead><tr><th>id</th><th>шаблон</th><th>статус</th><th>режим</th><th>элементов</th><th>создан</th></tr></thead>
-      <tbody><tr v-for="r in runs" :key="r.id"><td><a :href="'#/run/'+r.id">{{ r.id }}</a></td><td>{{ r.templateName }}</td><td><span :class="'cell st-'+r.status">{{ r.status }}</span></td><td>{{ r.mode }}</td><td>{{ r.items }}</td><td>{{ r.createdAt.replace('T',' ').slice(0,19) }}</td></tr></tbody></table>
+      <tbody><tr v-for="r in filteredRuns" :key="r.id"><td><a :href="'#/run/'+r.id">{{ r.id }}</a></td><td>{{ r.templateName }}</td><td><span :class="'cell st-'+r.status">{{ r.status }}</span></td><td>{{ r.mode }}</td><td>{{ r.items }}</td><td>{{ r.createdAt.replace('T',' ').slice(0,19) }}</td></tr></tbody></table>
   </section>
 
   <section v-if="view==='run' && run">

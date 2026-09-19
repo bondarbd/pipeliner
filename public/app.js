@@ -1,22 +1,33 @@
 /* global Vue */
 const { createApp } = Vue;
 
-const tokenFromHash = () => { const m = location.hash.match(/[#&]t=([^&]+)/); if (m) { sessionStorage.setItem('rb_token', m[1]); location.hash = '#/'; } return sessionStorage.getItem('rb_token') || ''; };
+const tokenFromHash = () => {
+  const m = location.hash.match(/[#&]t=([^&]+)/);
+  if (m) { sessionStorage.setItem('rb_token', m[1]); history.replaceState(null, '', `${location.pathname}#/`); }
+  return sessionStorage.getItem('rb_token') || '';
+};
 
 createApp({
   data() {
-    return { view: 'templates', error: '', busy: false, templates: [], templateErrors: [], projects: [], sel: null, trust: null,
-      form: { params: {}, items: [], itemsJson: '', mode: 'all' }, runs: [], run: null, runId: null, drawer: null, logText: '', ctx: null, timer: null, token: tokenFromHash() };
+    return { view: 'templates', error: '', busy: false, templates: [], templateErrors: [], projects: [], sel: null, trust: null, previewRows: [],
+      form: { params: {}, items: [], itemsJson: '', mode: 'all' }, runs: [], run: null, runId: null, drawer: null, logText: '', ctx: null, timer: null, token: tokenFromHash(),
+      answerFields: {}, runsFilter: { template: '', status: '' } };
   },
   computed: {
     waitingCells() {
       if (!this.run) return [];
       const out = [];
       for (const s of this.run.steps) {
-        if (s.once) { const c = this.run.once[s.name]; if (c.status === 'waiting') out.push({ key: `*:${s.name}`, item: null, step: s.name, waiting: c.waiting, fields: {} }); continue; }
-        for (const it of this.run.items) { const c = this.run.cells[it.name]?.[s.name]; if (c?.status === 'waiting') out.push({ key: `${it.name}:${s.name}`, item: it.name, step: s.name, waiting: c.waiting, fields: {} }); }
+        if (s.once) { const key = `*:${s.name}`; const c = this.run.once[s.name]; if (c.status === 'waiting') out.push({ key, item: null, step: s.name, waiting: c.waiting, fields: this.ensureFields(key) }); continue; }
+        for (const it of this.run.items) { const key = `${it.name}:${s.name}`; const c = this.run.cells[it.name]?.[s.name]; if (c?.status === 'waiting') out.push({ key, item: it.name, step: s.name, waiting: c.waiting, fields: this.ensureFields(key) }); }
       }
       return out;
+    },
+    runTemplates() { return [...new Set(this.runs.map((r) => r.templateName))]; },
+    runStatuses() { return [...new Set(this.runs.map((r) => r.status))]; },
+    filteredRuns() {
+      return this.runs.filter((r) => (!this.runsFilter.template || r.templateName === this.runsFilter.template)
+        && (!this.runsFilter.status || r.status === this.runsFilter.status));
     },
   },
   methods: {
@@ -39,8 +50,9 @@ createApp({
     loadTemplates() { return this.guard(async () => { const d = await this.api('GET', '/templates'); this.templates = d.templates; this.templateErrors = d.errors; this.projects = await this.api('GET', '/projects'); }); },
     loadRuns() { return this.guard(async () => { this.runs = await this.api('GET', '/runs'); }); },
     loadRun() { return this.guard(async () => { this.run = await this.api('GET', `/runs/${this.runId}`); }); },
-    pick(t) { this.sel = t; this.trust = null; this.form = { params: Object.fromEntries(Object.entries(t.params).map(([k, p]) => [k, p.default ?? ''])), items: [], itemsJson: '', mode: t.modes[0] || 'all' }; },
+    pick(t) { this.sel = t; this.trust = null; this.previewRows = []; this.form = { params: Object.fromEntries(Object.entries(t.params).map(([k, p]) => [k, p.default ?? ''])), items: [], itemsJson: '', mode: t.modes[0] || 'all' }; },
     itemsPayload() { if ((this.sel.items.source || 'manual') === 'dirs') return this.form.items; return this.form.itemsJson.trim() ? JSON.parse(this.form.itemsJson) : []; },
+    preview() { return this.guard(async () => { const { rows } = await this.api('POST', `/templates/${this.sel.name}/preview`, { params: this.form.params, items: this.itemsPayload(), mode: this.form.mode }); this.previewRows = rows; }); },
     launch() { return this.guard(async () => {
       this.busy = true;
       try { const { id } = await this.api('POST', '/runs', { template: this.sel.name, params: this.form.params, items: this.itemsPayload(), mode: this.form.mode }); location.hash = `#/run/${id}`; }
@@ -51,7 +63,12 @@ createApp({
     act(a) { return this.guard(async () => { await this.api('POST', `/runs/${this.runId}/${a}`); await this.loadRun(); }); },
     confirmAbort() { if (confirm('Прервать весь запуск и убить запущенные процессы?')) this.act('abort'); },
     abortItem(item) { if (confirm(`Исключить ${item} из запуска?`)) this.guard(async () => { await this.api('POST', `/runs/${this.runId}/items/${item}/abort`); await this.loadRun(); }); },
-    answer(item, step, answer, fields = {}) { return this.guard(async () => { await this.api('POST', `/runs/${this.runId}/answer`, { item: item ?? '_', step, answer, fields }); await this.loadRun(); }); },
+    ensureFields(key) { return (this.answerFields[key] ??= {}); },
+    answer(item, step, answer, fields = {}) { return this.guard(async () => {
+      await this.api('POST', `/runs/${this.runId}/answer`, { item: item ?? '_', step, answer, fields });
+      delete this.answerFields[`${item ?? '*'}:${step}`];
+      await this.loadRun();
+    }); },
     cellOf(d) { return d.item ? this.run.cells[d.item][d.step] : this.run.once[d.step]; },
     canRetry(c) { return ['paused', 'interrupted', 'unverified', 'failed', 'skipped'].includes(c.status) && !c.noRetry; },
     open(item, step) { this.drawer = { kind: 'cell', item, step }; this.loadLog('log'); },

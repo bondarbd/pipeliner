@@ -18,14 +18,16 @@ export class Manager {
     this.templates = new Map(); this.templateErrors = [];
   }
 
-  async init() {
+  async init({ recover = true } = {}) {
     fs.mkdirSync(this.home, { recursive: true, mode: 0o700 });
     this.reloadTemplates();
-    for (const s of store.listRuns(this.home)) {
-      if (['done', 'aborted'].includes(s.status)) continue;
-      const run = store.loadRun(this.home, s.id);
-      const engine = this.attach(run);
-      await engine.recover();
+    if (recover) {
+      for (const s of store.listRuns(this.home)) {
+        if (['done', 'aborted'].includes(s.status)) continue;
+        const run = store.loadRun(this.home, s.id);
+        const engine = this.attach(run);
+        await engine.recover();
+      }
     }
     return this;
   }
@@ -46,8 +48,8 @@ export class Manager {
   }
 
   list() { return store.listRuns(this.home).map((s) => (this.engines.has(s.id) ? { ...s, status: this.engines.get(s.id).run.status } : s)); }
-  get(id) { if (this.engines.has(id)) return this.engines.get(id).run; try { return store.loadRun(this.home, id); } catch { return null; } }
-  engine(id) { return this.engines.get(id) || null; }
+  get(id) { if (!store.VALID_ID.test(id)) return null; if (this.engines.has(id)) return this.engines.get(id).run; try { return store.loadRun(this.home, id); } catch { return null; } }
+  engine(id) { if (!store.VALID_ID.test(id)) return null; return this.engines.get(id) || null; }
 
   checkParams(tpl, params) {
     const errs = [];
