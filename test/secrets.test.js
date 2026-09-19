@@ -17,3 +17,8 @@ test('masks generic patterns even for unknown secrets', () => {
   assert.equal(m.mask('?token=abc&x=1 password=zzz'), '?token=***&x=1 password=***');
   assert.equal(m.mask('https://bob:pa55@jenkins/x'), 'https://bob:***@jenkins/x');
 });
+
+test('masks Authorization value with embedded spaces to end of line', () => {
+  const m = createMasker([]);
+  assert.equal(m.mask('Authorization: Bearer a b c\nnext'), 'Authorization: Bearer ***\nnext');
+});

@@ -15,7 +15,7 @@ export function createMasker(values = []) {
     mask(s) {
       let out = String(s);
       if (exactRe) out = out.replace(exactRe, '***');
-      out = out.replace(/(Authorization:\s*)((?:Basic|Bearer|Token)\s+)?\S+/gi, (_, p, scheme) => `${p}${scheme || ''}***`);
+      out = out.replace(/(Authorization:\s*)((?:Basic|Bearer|Token)\s+)?[^\r\n]+/gi, (_, p, scheme) => `${p}${scheme || ''}***`);
       out = out.replace(/((?:token|password|passwd|secret)=)[^\s&"']+/gi, '$1***');
       out = out.replace(/\/\/([^\/\s:@]+):([^@\s\/]+)@/g, '//$1:***@');
       return out;

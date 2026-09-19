@@ -26,3 +26,9 @@ test('json without result throws OutputError; text returns trimmed tail', () => 
   assert.throws(() => parseOutput('json', { tail: 'nothing here', outDir }), OutputError);
   assert.deepEqual(parseOutput('text', { tail: ' hi \n', outDir }), { text: 'hi' });
 });
+
+test('json with malformed result.json throws OutputError', () => {
+  const outDir = dir();
+  fs.writeFileSync(path.join(outDir, 'result.json'), '{not valid json');
+  assert.throws(() => parseOutput('json', { tail: '', outDir }), OutputError);
+});
