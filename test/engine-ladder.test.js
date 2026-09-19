@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkEngine } from './helpers.js';
+import { loadRun } from '../src/engine/store.js';
 
 const fail = { ok: false, error: 'boom' };
 const okr = { ok: true, output: { v: 1 } };
@@ -78,4 +79,44 @@ test('max_attempts budget pauses the cell even when the user keeps retrying', as
   engine.retry('a', 's'); await engine.idle();
   assert.equal(run.cells.a.s.attempts, 2);
   assert.match(run.cells.a.s.error, /budget: max_attempts/);
+});
+
+test('delayed retry: retryAt is persisted immediately, cell eventually succeeds', async () => {
+  const { engine, run, home } = mkEngine({ items: [{ name: 'a' }],
+    steps: [{ name: 's', each: true, shell: 'x', on_fail: [{ do: 'retry', times: 1, delay: 0.05 }, { do: 'pause' }] }],
+    plan: { 'a:s': [fail, okr] } });
+  engine.start();
+  await new Promise((r) => setTimeout(r, 10));
+  const mid = loadRun(home, run.id);
+  assert.equal(typeof mid.cells.a.s.retryAt, 'number');
+  await engine.idle();
+  assert.equal(run.cells.a.s.status, 'success');
+  const ev = run.history.find((e) => e.type === 'cell.retry_scheduled');
+  assert.ok(ev);
+  assert.equal(ev.delayMs, 50);
+});
+
+test('dirtyAfterKill blocks retry entirely', async () => {
+  const { engine, run } = mkEngine({ items: [{ name: 'a' }], steps: [{ name: 's', each: true, shell: 'x' }],
+    plan: { 'a:s': { ok: false, error: 'timeout', dirtyAfterKill: true } } });
+  engine.start(); await engine.idle();
+  assert.equal(run.cells.a.s.status, 'paused');
+  assert.equal(run.cells.a.s.noRetry, true);
+  assert.match(run.cells.a.s.error, /^dirty_after_kill:/);
+  assert.throws(() => engine.retry('a', 's'), /retry blocked/);
+});
+
+test('abort: never-resolving cell is marked failed, pending timers are cleared', async () => {
+  const { engine, run } = mkEngine({ items: [{ name: 'a' }, { name: 'b' }],
+    steps: [{ name: 's', each: true, shell: 'x', on_fail: [{ do: 'retry', times: 1, delay: 0.5 }, { do: 'pause' }] }],
+    plan: { 'a:s': () => new Promise(() => {}), 'b:s': fail } });
+  engine.start();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(run.cells.a.s.status, 'running');
+  assert.equal(engine.timers.size, 1);
+  await engine.abort('test');
+  assert.equal(run.status, 'aborted');
+  assert.ok(run.finishedAt);
+  assert.equal(run.cells.a.s.status, 'failed');
+  assert.equal(engine.timers.size, 0);
 });

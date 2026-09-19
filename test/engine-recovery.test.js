@@ -5,8 +5,10 @@ import path from 'node:path';
 import { mkEngine } from './helpers.js';
 import { Engine } from '../src/engine/run.js';
 import { loadRun } from '../src/engine/store.js';
+import * as locks from '../src/engine/locks.js';
 
 const fail = { ok: false, error: 'boom' };
+const okr = { ok: true, output: {} };
 
 test('check short-circuits the body; verify failure makes the cell unverified and applies the ladder', async () => {
   const { engine, run, fake } = mkEngine({ items: [{ name: 'a' }, { name: 'b' }],
@@ -42,10 +44,30 @@ test('agent-call budget and run timeout pause the run with a note', async () => 
   assert.match(run.note, /max_agent_calls/);
   assert.equal(run.cells.b.s.status, 'pending');
 
+  engine.resumeRun(); await engine.idle();
+  assert.equal(run.cells.b.s.status, 'success');
+  assert.equal(run.pausedByUser, false);
+
   const t = mkEngine({ items: [{ name: 'a' }], steps: [{ name: 's', each: true, shell: 'x' }], config: { limits: { run_timeout: 0 } } });
   t.run.createdAt = new Date(Date.now() - 5000).toISOString();
   t.engine.start(); await t.engine.idle();
   assert.match(t.run.note, /run_timeout/);
+  t.engine.resumeRun(); await t.engine.idle();
+  assert.equal(t.run.cells.a.s.status, 'success');
+});
+
+test('resource lock busy pauses the cell without spending an attempt; releasing the lock lets a retry succeed', async () => {
+  const { engine, run, cfg } = mkEngine({ items: [{ name: 'p' }],
+    steps: [{ name: 's', each: true, shell: 'x', resource: 'repo:${{ item.name }}' }],
+    plan: { 'p:s': okr }, config: { limits: { lock_wait: 0 } } });
+  await locks.acquire(cfg.home, 'repo:p', { owner: 'other' });
+  engine.start(); await engine.idle();
+  assert.equal(run.cells.p.s.status, 'paused');
+  assert.match(run.cells.p.s.error, /busy/);
+  assert.equal(run.cells.p.s.attempts, 0);
+  locks.release(cfg.home, 'repo:p', 'other');
+  engine.retry('p', 's'); await engine.idle();
+  assert.equal(run.cells.p.s.status, 'success');
 });
 
 test('recover: running cells become interrupted, check can confirm them, no auto retry otherwise', async () => {

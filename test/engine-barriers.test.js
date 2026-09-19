@@ -54,6 +54,43 @@ test('human step waits, answer continues or pauses, notes are written', async ()
   assert.throws(() => engine.answer('a', 'ask', { answer: 'x' }), /not waiting/);
 });
 
+test('needInput round trip: runner asks a follow-up question, answer resumes the same step', async () => {
+  const { engine, run } = mkEngine({ items: [{ name: 'a' }],
+    steps: [{ name: 's', each: true, shell: 'x' }],
+    plan: { 'a:s': [{ ok: false, needInput: 'which version?' }, { ok: true, output: { v: '2' } }] } });
+  engine.start(); await engine.idle();
+  assert.equal(run.cells.a.s.status, 'waiting');
+  assert.equal(run.cells.a.s.needInput, true);
+  assert.deepEqual(run.cells.a.s.waiting.fields, ['answer']);
+  engine.answer('a', 's', { answer: '2' });
+  await engine.idle();
+  assert.equal(run.cells.a.s.status, 'success');
+  assert.equal(run.cells.a.s.attempts, 1);
+  assert.match(fs.readFileSync(paths(run, 'a').notes, 'utf8'), /A: 2/);
+});
+
+test('pilot rejection pauses the run and re-asks after resume', async () => {
+  const order = [];
+  const rec = (step, r) => { order.push(`${r.item.name}:${step.name}:${r.pilotNotes ? 'notes' : '-'}`); return { ok: true, output: {} }; };
+  const { engine, run } = mkEngine({ mode: 'pilot', items: [{ name: 'a' }, { name: 'b' }],
+    steps: [{ name: 's', each: true, shell: 'x' }],
+    plan: { 'a:s': rec, 'b:s': rec } });
+  engine.start(); await engine.idle();
+  assert.equal(run.pilot.status, 'waiting');
+  engine.answer('__pilot__', null, { answer: 'Нет' });
+  await engine.idle();
+  assert.equal(run.pausedByUser, true);
+  assert.match(run.note, /pilot rejected/);
+  assert.equal(run.pilot.status, 'running');
+  engine.resumeRun(); await engine.idle();
+  assert.equal(run.pilot.status, 'waiting');
+  assert.deepEqual(order, ['a:s:-']);
+  fs.appendFileSync(paths(run, 'a').notes, 'pilot learned X');
+  engine.answer('__pilot__', null, { answer: 'Да' }); await engine.idle();
+  assert.deepEqual(order, ['a:s:-', 'b:s:notes']);
+  assert.equal(run.status, 'done');
+});
+
 test('pilot mode: first item runs alone, then a pilot gate, then the rest with pilot notes', async () => {
   const order = [];
   const rec = (step, r) => { order.push(`${r.item.name}:${step.name}:${r.pilotNotes ? 'notes' : '-'}`); return { ok: true, output: {} }; };

@@ -43,6 +43,16 @@ test('when: false skips the cell; failure without on_fail pauses the lane, other
   assert.equal(run.status, 'paused');
 });
 
+test('per-step parallel limit overrides the wider global limit', async () => {
+  let running = 0, peak = 0;
+  const slow = async () => { running++; peak = Math.max(peak, running); await new Promise((r) => setTimeout(r, 20)); running--; return { ok: true, output: {} }; };
+  const { engine } = mkEngine({ steps: [{ name: 's', each: true, shell: 'x', parallel: 1 }],
+    items: [{ name: 'a' }, { name: 'b' }, { name: 'c' }],
+    plan: { 'a:s': slow, 'b:s': slow, 'c:s': slow }, config: { limits: { parallel: 4 } } });
+  engine.start(); await engine.idle();
+  assert.equal(peak, 1);
+});
+
 test('change events are emitted and run.json is persisted', async () => {
   const { engine, run, home } = mkEngine({ steps: [{ name: 's', each: true, shell: 'x' }] });
   let n = 0; engine.on('change', () => n++);
