@@ -1,0 +1,41 @@
+# yaml-language-server: $schema=../src/template/schema.json
+name: hello
+title: Hello (обучающий шаблон)
+description: >-
+  Три фейковых проекта. beta падает один раз и чинится retry, gamma падает всегда и
+  уходит в паузу; барьер succeeded пропускает сводку без gamma.
+params:
+  greeting: { type: string, required: false, label: "Приветствие", default: "Привет" }
+items:
+  source: manual
+  default:
+    - { name: alpha }
+    - { name: beta }
+    - { name: gamma }
+modes: [all, pilot]
+steps:
+  - name: greet
+    each: true
+    shell: echo "message=${{ run.params.greeting || 'Привет' }}, ${{ item.name }}"
+    output: keys
+
+  - name: flaky
+    each: true
+    shell: bash ${{ run.templateDir }}/hello/flaky.sh ${{ item.name }} $OUT
+    output: keys
+    retriable: true
+    on_fail:
+      - { do: retry, times: 1, delay: 0 }
+      - { do: pause }
+
+  - name: confirm
+    once: true
+    barrier: succeeded
+    human:
+      question: "Сводку собирать? Успешно прошли ${{ run.items.length }} элементов (проверьте таблицу)."
+
+  - name: summary
+    once: true
+    barrier: succeeded
+    js: ./hello/summary.js
+    output: json
