@@ -126,7 +126,10 @@ export function createApp(opts) {
     fs.writeFileSync(p.notes, String(req.body.notes ?? ''));
     res.status(204).end();
   });
-  app.post('/api/clean', (req, res) => res.json({ removed: manager.clean(req.body?.days ? Number(req.body.days) : undefined) }));
+  app.post('/api/clean', (req, res) => {
+    const days = req.body?.days === undefined ? undefined : Number(req.body.days);
+    try { res.json({ removed: manager.clean(days) }); } catch (e) { res.status(400).json({ error: e.message }); }
+  });
   app.post('/api/runs/:id/render', (req, res) => {
     const r = run(req, res); if (!r) return;
     const { item, step } = req.body || {};

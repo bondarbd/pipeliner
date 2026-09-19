@@ -3,10 +3,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 export function runsDir(home) { return path.join(home, 'runs'); }
-export const safe = (s) => String(s).replace(/[^A-Za-z0-9._-]/g, '_');
+// directory name for an item: the name itself when it is already filesystem-safe, otherwise the
+// sanitised form plus a hash so that two different names never share a directory
+export const safe = (s) => (/^[A-Za-z0-9._-]+$/.test(String(s)) ? String(s)
+  : `${String(s).replace(/[^A-Za-z0-9._-]/g, '_')}-${crypto.createHash('sha1').update(String(s)).digest('hex').slice(0, 8)}`);
 export const VALID_ID = /^[A-Za-z0-9._-]+$/;
-// item names are object keys and path segments: no prototype names, no separators
-const BAD_NAME = /^(__proto__|constructor|prototype)$|[/\\\0]/;
+// item names are object keys and path segments: no prototype names, no separators, no . / ..
+const BAD_NAME = /^(__proto__|constructor|prototype|\.{1,2})$|[/\\\0]/;
 export const validName = (n) => typeof n === 'string' && n.trim().length > 0 && n.length <= 200 && !BAD_NAME.test(n);
 
 export function newRunId() {
@@ -85,12 +88,14 @@ export function saveRun(run) {
   const file = path.join(run.dir, 'run.json');
   const tmp = `${file}.${process.pid}.tmp`;
   const fd = fs.openSync(tmp, 'w', 0o600);
-  try { fs.writeSync(fd, JSON.stringify(run, null, 1)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  try { fs.writeFileSync(fd, JSON.stringify(run, null, 1)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, file);
+  try { const d = fs.openSync(run.dir, 'r'); try { fs.fsyncSync(d); } finally { fs.closeSync(d); } } catch { /* directory fsync is best effort (not supported everywhere) */ }
 }
 
 // run.json written by an older version: fill in fields later code relies on
 function migrate(run) {
+  run.items ??= []; run.cells ??= {}; run.once ??= {}; run.history ??= []; run.seq ??= 0;
   run.budgets = { agentCalls: 0, since: run.createdAt, ...(run.budgets || {}) };
   for (const it of run.items) it.addedAt ??= run.createdAt;
   for (const bag of [run.once, ...Object.values(run.cells)]) for (const k of Object.keys(bag)) bag[k] = { ...newCell(), ...bag[k] };

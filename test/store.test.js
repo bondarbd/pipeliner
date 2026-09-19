@@ -48,7 +48,12 @@ test('item names that are prototype keys or paths are rejected; old run.json is 
   const { home, run } = mk();
   assert.throws(() => store.itemCell(run, '__proto__', 'a'), /invalid item name/);
   assert.throws(() => store.itemCell(run, 'x/y', 'a'), /invalid item name/);
+  assert.throws(() => store.itemCell(run, '..', 'a'), /invalid item name/);
   assert.equal({}.a, undefined);
+  // two different unsafe names never share a directory; safe names keep their own
+  assert.notEqual(store.safe('альфа'), store.safe('омега'));
+  assert.equal(store.safe('svc-a'), 'svc-a');
+  assert.match(store.safe('app два'), /^app_.{3}-[0-9a-f]{8}$/);
   // strip fields a v1 file would not have
   const j = JSON.parse(fs.readFileSync(path.join(run.dir, 'run.json'), 'utf8'));
   delete j.budgets.since; delete j.items[0].addedAt; delete j.cells.p1.a.questions; delete j.cells.p1.a.via;
@@ -58,6 +63,11 @@ test('item names that are prototype keys or paths are rejected; old run.json is 
   assert.equal(loaded.items[0].addedAt, loaded.createdAt);
   assert.equal(loaded.cells.p1.a.questions, 0);
   assert.equal(loaded.cells.p1.a.via, null);
+  // a bare-bones run.json (older format) still loads and lists
+  fs.writeFileSync(path.join(run.dir, 'run.json'), JSON.stringify({ id: run.id, dir: run.dir, templateName: 'demo', status: 'paused', createdAt: run.createdAt, updatedAt: run.createdAt, params: {}, steps: run.steps }));
+  const bare = store.loadRun(home, run.id);
+  assert.deepEqual([bare.items, bare.history, bare.seq, bare.budgets.agentCalls], [[], [], 0, 0]);
+  assert.equal(store.listRuns(home)[0].id, run.id);
 });
 
 test('buildCtx exposes run/item/output namespaces', () => {

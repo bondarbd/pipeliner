@@ -40,9 +40,9 @@ test('a paused once-step does not block a later once-step with barrier: succeede
 test('produced items: prototype names are ignored, item fields cannot override status, too many new items pause the step', async () => {
   const { engine, run } = mkEngine({ items: [],
     steps: [{ name: 'scan', once: true, shell: 'x', output: 'json', items: '${{ output }}' }, { name: 'b', each: true, shell: 'y' }],
-    plan: { '*:scan': { ok: true, output: [{ name: '__proto__', x: 1 }, { name: 'ok', status: 'aborted' }, { name: 'a/b' }] } } });
+    plan: { '*:scan': { ok: true, output: [{ name: '__proto__', x: 1 }, { name: 'ok', status: 'aborted', dir: '/etc', link: 'javascript:alert(1)' }, { name: 'a/b' }, { name: '..' }] } } });
   engine.start(); await engine.idle();
-  assert.deepEqual(run.items.map((i) => [i.name, i.status]), [['ok', 'active']]);
+  assert.deepEqual(run.items.map((i) => [i.name, i.status, i.dir, i.link]), [['ok', 'active', undefined, null]]);   // dir outside projects_root and unsafe link are dropped
   assert.equal({}.x, undefined);
   assert.equal(run.status, 'done');
   const many = mkEngine({ items: [], config: { limits: { max_new_items: 2 } },
@@ -142,6 +142,27 @@ test('a long human wait is credited back to the budget clock, so parallel cells 
   engine.answer('a', 'ask', { answer: 'Да' }); engine.answer('b', 'ask', { answer: 'Да' }); await engine.idle();
   assert.equal(run.pausedByUser, false, run.note);
   assert.equal(run.status, 'done');
+});
+
+test('run_timeout trips inside one long cell via the budget timer, and is re-armed after resume', async () => {
+  const slow = (ms) => () => new Promise((r) => setTimeout(() => r({ ok: true, output: {} }), ms));
+  const { engine, run } = mkEngine({ items: [{ name: 'a' }],
+    steps: [{ name: 's', each: true, shell: 'x' }, { name: 't', each: true, shell: 'y' }],
+    plan: { 'a:s': slow(400) }, config: { limits: { run_timeout: 0.1 } } });
+  engine.start();
+  await new Promise((r) => setTimeout(r, 250));   // no other cell finishes, only the timer can wake the engine
+  assert.equal(run.pausedByUser, true); assert.match(run.note, /run_timeout/);
+  engine.resumeRun();                              // a:s is still running: the timer must be armed again, not left dead
+  assert.ok(engine.budgetTimer, 'timer re-armed on resume');
+  await engine.idle();
+  assert.equal(run.cells.a.s.status, 'success');
+  assert.equal(run.status, 'done');
+});
+
+test('abortItem on an unknown item is an error', async () => {
+  const { engine } = mkEngine({ steps: [{ name: 's', each: true, shell: 'x' }] });
+  engine.start(); await engine.idle();
+  await assert.rejects(engine.abortItem('nobody'), /unknown item nobody/);
 });
 
 test('outbound accepts a custom list of confirming answers', async () => {

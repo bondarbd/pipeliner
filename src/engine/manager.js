@@ -35,7 +35,7 @@ export class Manager {
     this.templates = templates; this.templateErrors = errors;
   }
   attach(run) {
-    const engine = new Engine({ run, config: this.config, runners: this.runners, envValues: this.envValues });
+    const engine = new Engine({ run, config: this.config, runners: this.runners, envValues: this.envValues, projectDir: (d) => this.projectDir(d) });
     engine.on('error', (e) => {
       console.error(e.stack || e);
       run.status = 'paused';
@@ -87,6 +87,7 @@ export class Manager {
     return items.map((raw) => {
       const it = typeof raw === 'string' ? { name: raw } : { ...raw };
       if (!store.validName(it.name)) throw new Error(`invalid item name: ${JSON.stringify(it.name ?? null)}`);
+      if (it.dir !== undefined && !this.projectDir(it.dir)) throw new Error(`item ${it.name}: dir must be an existing directory under ${this.config.projects_root}`);
       if (!it.dir) {
         const candidate = path.join(this.config.projects_root, it.name);
         if (fs.existsSync(candidate)) it.dir = candidate;
@@ -95,13 +96,20 @@ export class Manager {
       return it;
     });
   }
+  // an item's working directory must stay inside projects_root (items may come from a step's output)
+  projectDir(dir) {
+    const root = path.resolve(this.config.projects_root);
+    const abs = path.resolve(root, String(dir));
+    return abs.startsWith(root + path.sep) && fs.existsSync(abs) ? abs : null;
+  }
   // what the user confirms when trusting a template: every command it may run, plus its sidecar scripts
   templateCommands(t) {
     const body = (s) => s.shell ?? s.js ?? s.agent?.prompt.split('\n')[0] ?? s.human?.question;
     const expr = (s, k, v) => v !== undefined && `${s.name} ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`;
     return t.tpl.steps.flatMap((s) => [`${s.name} [${bodyKind(s)}${s.outbound ? ', outbound' : ''}]: ${body(s)}`,
       expr(s, 'check', s.check), expr(s, 'verify', s.verify), expr(s, 'when', s.when), expr(s, 'items', s.items),
-      expr(s, 'cwd', s.cwd), expr(s, 'resource', s.resource), expr(s, 'input', s.agent?.input)])
+      expr(s, 'cwd', s.cwd), expr(s, 'resource', s.resource), expr(s, 'input', s.agent?.input),
+      ...(s.on_fail || []).filter((r) => r.do === 'agent').map((r) => expr(s, 'on_fail agent', r.prompt.split('\n')[0]))])
       .filter(Boolean).concat((t.sidecars || []).map((p) => `sidecar: ${p}`));
   }
   trustFile() { return path.join(this.home, 'trusted.json'); }
@@ -128,6 +136,7 @@ export class Manager {
   }
 
   clean(days = this.config.logs.retention_days) {
+    if (typeof days !== 'number' || !Number.isFinite(days) || days < 0) throw new Error(`days must be a non-negative number, got ${JSON.stringify(days)}`);
     const cutoff = Date.now() - days * 86400_000;
     let removed = 0;
     for (const s of store.listRuns(this.home)) {

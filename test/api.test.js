@@ -63,6 +63,9 @@ test('templates, projects, trust flow, run lifecycle over HTTP', async () => {
   assert.equal((await api(`/runs/${id}/context?item=p1`, { method: 'PUT', body: JSON.stringify({ notes: 'clobber', notesHash: ctx.notesHash }) })).status, 409);
   assert.equal((await (await api(`/runs/${id}/context?item=p1`)).json()).notes, 'edited');
   assert.deepEqual(await (await api('/clean', { method: 'POST', body: JSON.stringify({ days: 9999 }) })).json(), { removed: 0 });
+  assert.equal((await api('/clean', { method: 'POST', body: JSON.stringify({ days: 'abc' }) })).status, 400);   // NaN would have wiped every finished run
+  assert.equal((await api('/clean', { method: 'POST', body: JSON.stringify({ days: -1 }) })).status, 400);
+  assert.ok((await (await api('/runs')).json()).some((r) => r.id === id), 'the done run survived the bad clean calls');
   const rend = await (await api(`/runs/${id}/render`, { method: 'POST', body: JSON.stringify({ item: 'p1', step: 's' }) })).json();
   assert.equal(rend.command, 'echo hi');
   assert.equal((await api(`/runs/${id}/log?item=p1&step=s&seq=1`)).status, 404);   // fake runner writes no log

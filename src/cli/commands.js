@@ -72,7 +72,7 @@ export async function init(args, io) {
   fs.mkdirSync(path.join(io.home, 'templates'), { recursive: true });
   const f = path.join(io.home, 'config.yaml');
   if (!fs.existsSync(f)) {
-    fs.writeFileSync(f, `# runboard config — see README\nprojects_root: ${DEFAULTS.projects_root}\nskills_root: ${DEFAULTS.skills_root}\nenv_file: ${DEFAULTS.env_file}\nagent:\n  command: ["gigacode", "-p", "{prompt}", "--approval-mode", "auto-edit"]\n  readonly_command: ["gigacode", "-p", "{prompt}", "--approval-mode", "plan"]\n  max_parallel: 2\n  timeout: 1800\nlimits:\n  parallel: 4\n  max_attempts: 3\n  max_agent_calls: 30\nlogs:\n  retention_days: 14\n`, { mode: 0o600 });
+    fs.writeFileSync(f, `# runboard config — see README\nprojects_root: ${DEFAULTS.projects_root}\nskills_root: ${DEFAULTS.skills_root}\nenv_file: ${DEFAULTS.env_file}\nagent:\n  command: ["gigacode", "-p", "{prompt}", "--approval-mode", "auto-edit"]\n  readonly_command: ["gigacode", "-p", "{prompt}", "--approval-mode", "plan"]\n  max_parallel: 2\n  timeout: 1800\nlimits:\n  parallel: 4\n  max_attempts: 3\n  max_agent_calls: 30\n  max_new_items: 50\nlogs:\n  retention_days: 14\n`, { mode: 0o600 });
     io.out(`created ${f}`);
   } else io.out(`exists ${f}`);
   io.out(`templates dir: ${path.join(io.home, 'templates')}`);
@@ -174,15 +174,18 @@ async function followEngine(e, io) {
     e.answer(item, step, { answer: a });
   }
 }
-async function serverFollow(io, id, waitSeconds = 0) {
+// through the server the engine is not ours to wait on: poll while the run is executing (up to --wait
+// seconds, default an hour) and stop as soon as it needs a human, pauses or finishes
+async function serverFollow(io, id, waitSeconds) {
   let r = await api(io, 'GET', `/runs/${id}`);
-  const until = Date.now() + Math.max(0, waitSeconds) * 1000;
-  while ((r.status === 'running' || r.status === 'waiting_for_human') && Date.now() < until) {
+  const until = Date.now() + (waitSeconds ?? 3600) * 1000;
+  while (r.status === 'running' && Date.now() < until) {
     await new Promise((res) => setTimeout(res, 1000));
     r = await api(io, 'GET', `/runs/${id}`);
   }
   return r;
 }
+const waitArg = (args) => (args.wait === undefined ? undefined : Number(args.wait) || 0);
 
 export async function run(args, io) {
   const name = args._[0];
@@ -195,8 +198,8 @@ export async function run(args, io) {
   if (liveServer(io.home)) {
     const created = await createTrusting(io, args, name, () => api(io, 'POST', '/runs', req), (hash) => api(io, 'POST', `/templates/${name}/trust`, { hash }));
     if (!created) return 3;
-    io.out(`started ${created.id} (server)`);
-    return printRun(await serverFollow(io, created.id, Number(args.wait) || 0), io);
+    io.out(`started ${created.id} (server)${args.answer !== undefined ? ' — note: --answer is not applied through the server, use runboard answer' : ''}`);
+    return printRun(await serverFollow(io, created.id, waitArg(args)), io);
   }
   return withInstanceLock(io, async () => {
     const m = await manager(io);   // a new run: unfinished runs on disk are not touched
@@ -234,16 +237,17 @@ export async function log(args, io) {
   if (!store.LOG_KINDS.includes(kind)) { io.err(`--kind must be ${store.LOG_KINDS.join('|')}`); return 1; }
   const seq = args.seq ? Number(args.seq) : c.seq;
   const file = store.logFile(run, nullable(item), step, seq, kind);
-  if (!fs.existsSync(file)) { io.err(`no ${kind} for ${item}/${step} (seq ${seq}): ${file}`); return 1; }
   // earlier attempts of the same cell live next to it as <step>.<seq>.log with smaller seq
-  const attempts = fs.readdirSync(path.dirname(file)).filter((f) => f.startsWith(`${store.safe(step)}.`) && f.endsWith('.log') && !/\.(check|verify|diagnose)\.log$/.test(f)).map((f) => Number(f.split('.')[1])).sort((a, b) => a - b);
+  const dir = path.dirname(file);
+  const attempts = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.startsWith(`${store.safe(step)}.`) && f.endsWith('.log') && !/\.(check|verify|diagnose)\.log$/.test(f)).map((f) => Number(f.split('.')[1])).sort((a, b) => a - b) : [];
+  if (!fs.existsSync(file)) { io.err(`no ${kind} for ${item}/${step} at seq ${seq}${attempts.length ? ` (attempts on disk: seq ${attempts.join(', ')})` : ''}`); return 1; }
   io.out(`# ${file}${attempts.length > 1 ? `   (attempts: seq ${attempts.join(', ')} — use --seq N)` : ''}`);
   io.out(store.tailFile(file, Number(args.bytes) || 4096).trimEnd());
   return 0;
 }
 // a user action on a live run: through the server when it is up, otherwise in-process under the instance lock
 async function engineAction(args, io, id, viaServer, local) {
-  if (liveServer(io.home)) { await viaServer(); return printRun(await serverFollow(io, id, Number(args.wait) || 0), io); }
+  if (liveServer(io.home)) { await viaServer(); return printRun(await serverFollow(io, id, waitArg(args)), io); }
   return withInstanceLock(io, async () => {
     const m = await manager(io, id); const e = m.engine(id);   // only this run is resumed; others stay as they are on disk
     if (!e) {
@@ -314,7 +318,8 @@ export async function board(args, io) {
 }
 
 export async function clean(args, io) {
-  const days = args.days ? Number(args.days) : undefined;
+  const days = args.days === undefined ? undefined : Number(args.days);
+  if (days !== undefined && !(Number.isFinite(days) && days >= 0)) { io.err(`--days must be a non-negative number, got ${args.days}`); return 1; }
   if (liveServer(io.home)) { io.out(`removed ${(await api(io, 'POST', '/clean', { days })).removed} runs (server)`); return 0; }
   return withInstanceLock(io, async () => {
     const m = await manager(io); io.out(`removed ${m.clean(days)} runs`); return 0;

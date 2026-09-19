@@ -65,16 +65,19 @@ export async function run(step, r) {
   const timeout = a.timeout || r.timeout || r.config.agent.timeout;
   const env = { ...stepEnv(r), CTX_ITEM: ctxDir };
 
+  // {prompt_file} keeps the prompt out of the process argv (visible in `ps`): the unmasked text lives in a
+  // separate file only for the duration of the call; prompt.md stays the masked artifact
+  const rawFile = cmdTpl.some((x) => x.includes('{prompt_file}')) ? path.join(r.outDir, 'prompt.raw') : null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    // {prompt_file} keeps the prompt out of the process argv (visible in `ps`); the file is unmasked
-    // only when the command actually reads it
-    if (cmdTpl.some((x) => x.includes('{prompt_file}'))) fs.writeFileSync(promptFile, prompt, { mode: 0o600 });
-    const fill = { '{prompt}': prompt, '{prompt_file}': promptFile, '{out}': r.outDir, '{ctx}': ctxDir };
+    if (rawFile) fs.writeFileSync(rawFile, prompt, { mode: 0o600 });
+    const fill = { '{prompt}': prompt, '{prompt_file}': rawFile || promptFile, '{out}': r.outDir, '{ctx}': ctxDir };
     const argv = cmdTpl.map((x) => Object.entries(fill).reduce((s, [k, v]) => s.split(k).join(v), x));
     r.countAgentCall();
     const logged = argv.map((x) => r.masker.mask(x)).map((x) => (x.length > 80 ? `${x.slice(0, 80)}…` : x)).join(' ');
     fs.appendFileSync(r.logPath, `\n[runboard] agent call ${attempt + 1}: ${logged}\n`);
-    const res = await runProcess({ argv, cwd: r.cwd, env, timeout, logPath: r.logPath, masker: r.masker, maxBytes: r.config.logs?.max_step_log_bytes, onSpawn: r.onSpawn });
+    let res;
+    try { res = await runProcess({ argv, cwd: r.cwd, env, timeout, logPath: r.logPath, masker: r.masker, maxBytes: r.config.logs?.max_step_log_bytes, onSpawn: r.onSpawn }); }
+    finally { if (rawFile) fs.rmSync(rawFile, { force: true }); }
     if (inRepo) {
       let diff = ''; try { diff = git(r.cwd, ['diff']); } catch { /* snapshot is best effort */ }
       fs.writeFileSync(r.logPath.replace(/\.log$/, '.diff'), r.masker.mask(diff), { mode: 0o600 });

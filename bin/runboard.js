@@ -5,9 +5,10 @@ import * as c from '../src/cli/commands.js';
 
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._.shift();
-const FLAGS = new Set(['param', 'items', 'item', 'mode', 'dry-run', 'yes', 'answer', 'step', 'wait', 'kind', 'bytes', 'seq', 'link', 'all', 'days', 'port', '_', 'params']);
+const FLAGS = new Set(['param', 'items', 'item', 'mode', 'dry-run', 'yes', 'answer', 'step', 'wait', 'kind', 'bytes', 'seq', 'link', 'all', 'days', 'port', 'help', '_', 'params']);
 const unknown = Object.keys(args).filter((k) => !FLAGS.has(k));
 if (unknown.length) { console.error(`unknown option(s): ${unknown.map((k) => `--${k}`).join(' ')}`); process.exit(1); }
+if (args.help) args._ = [];   // --help anywhere prints usage
 const commands = { init: c.init, doctor: c.doctor, validate: c.validate, render: c.renderCmd, run: c.run, list: c.list, show: c.show, log: c.log,
   retry: c.retry, skip: c.skip, abort: c.abort, answer: c.answer, board: c.board,
   add: c.add, queue: c.queueCmd, done: c.done, snooze: c.snooze, drop: c.drop, clean: c.clean, serve: c.serve };

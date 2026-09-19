@@ -13,7 +13,7 @@ export const DEFAULTS = {
     max_parallel: 2,
     timeout: 1800,
   },
-  limits: { parallel: 4, max_attempts: 3, max_agent_calls: 30, run_timeout: 21600, lock_wait: 600 },
+  limits: { parallel: 4, max_attempts: 3, max_agent_calls: 30, run_timeout: 21600, lock_wait: 600, max_new_items: 50 },
   logs: { retention_days: 14, max_step_log_bytes: 5_000_000 },
   git: { allowed_push_branches: ['release/*', 'feature/*'] },
   server: { port: 3000 },

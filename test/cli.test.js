@@ -56,6 +56,10 @@ test('init, doctor, validate, render, dry-run and a real hello run', () => {
   assert.equal(r.code, 0); assert.match(r.out, /alpha/);
   r = sh(['queue', '--alll'], env);                          // typos in flags are errors, not silently ignored
   assert.equal(r.code, 1); assert.match(r.out, /unknown option\(s\): --alll/);
+  r = sh(['--help'], env);
+  assert.equal(r.code, 0); assert.match(r.out, /usage: runboard/);
+  r = sh(['clean', '--days', 'abc'], env);
+  assert.equal(r.code, 1); assert.match(r.out, /--days must be a non-negative number/);
   r = sh(['log', id, 'beta', 'flaky', '--seq', '1'], env);   // beta failed once: two attempts on disk
   assert.equal(r.code, 1);                                   // seq 1 belongs to another cell; the header lists this cell's seqs
   r = sh(['show', id], env);

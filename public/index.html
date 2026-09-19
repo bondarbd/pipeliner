@@ -142,6 +142,7 @@
     <div v-if="ctx" class="drawer">
       <header><b>Контекст {{ ctx.item || 'запуска' }}</b> <span style="float:right"><button @click="saveNotes">Сохранить notes.md</button> <button class="outline" @click="ctx=null">×</button></span></header>
       <textarea class="notes" v-model="ctx.notes"></textarea>
+      <details v-if="ctx.theirs !== null && ctx.theirs !== undefined" open><summary>Версия на диске (изменилась, пока вы редактировали)</summary><pre>{{ ctx.theirs }}</pre></details>
       <details><summary>Результаты шагов</summary><pre>{{ JSON.stringify(ctx.steps, null, 2) }}</pre></details>
     </div>
   </section>

@@ -93,8 +93,16 @@ createApp({
     cellAct(a) { return this.guard(async () => { await this.api('POST', `/runs/${this.runId}/cells/${encodeURIComponent(this.drawer.item ?? '_')}/${encodeURIComponent(this.drawer.step)}/${encodeURIComponent(a)}`); await this.loadRun(); }); },
     openCtx(item) { return this.guard(async () => { const d = await this.api('GET', `/runs/${this.runId}/context?item=${encodeURIComponent(item ?? '_')}`); this.ctx = { item, ...d }; }); },
     saveNotes() { return this.guard(async () => {
-      await this.api('PUT', `/runs/${this.runId}/context?item=${encodeURIComponent(this.ctx.item ?? '_')}`, { notes: this.ctx.notes, notesHash: this.ctx.notesHash });
-      await this.openCtx(this.ctx.item);   // pick up the new hash
+      const item = this.ctx.item;
+      try { await this.api('PUT', `/runs/${this.runId}/context?item=${encodeURIComponent(item ?? '_')}`, { notes: this.ctx.notes, notesHash: this.ctx.notesHash }); }
+      catch (e) {
+        if (!/changed since you opened it/.test(e.message)) throw e;
+        const d = await this.api('GET', `/runs/${this.runId}/context?item=${encodeURIComponent(item ?? '_')}`);
+        this.ctx.notesHash = d.notesHash; this.ctx.theirs = d.notes;   // show the newer file next to the edit; saving again now overwrites it knowingly
+        throw new Error('notes.md изменился, пока вы редактировали: свежая версия показана ниже, «Сохранить» ещё раз перезапишет её вашим текстом');
+      }
+      const d = await this.api('GET', `/runs/${this.runId}/context?item=${encodeURIComponent(item ?? '_')}`);
+      this.ctx.notesHash = d.notesHash; this.ctx.theirs = null;   // keep what is typed, only refresh the hash
     }); },
   },
   mounted() { window.addEventListener('hashchange', () => this.route()); this.route(); },

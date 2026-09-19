@@ -7,6 +7,7 @@ import { createMasker, secretValues } from '../secrets.js';
 import * as locks from './locks.js';
 import { killGroup } from './proc.js';
 import { bodyKind } from '../template/validate.js';
+import { checkLink } from '../queue.js';
 
 export const DONE = new Set(['success', 'skipped', 'n/a']);
 const STUCK = new Set(['paused', 'failed', 'interrupted', 'unverified']);
@@ -23,9 +24,10 @@ const now = () => new Date().toISOString();
 const sub = (r, kind) => ({ ...r, logPath: r.logPath.replace(/\.log$/, `.${kind}.log`) });
 
 export class Engine extends EventEmitter {
-  constructor({ run, config, runners, envValues = {}, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+  constructor({ run, config, runners, envValues = {}, projectDir = null, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
     super();
     this.run = run; this.config = config; this.runners = runners; this.envValues = envValues; this.sleep = sleep;
+    this.projectDir = projectDir;   // validates a dir produced by a step (Manager.projectDir); null = drop such dirs
     this.masker = createMasker(secretValues(envValues));
     this.active = new Map();     // "item:step" -> { step, agent }
     this.idleSince = Date.now(); // run_timeout counts only time with running cells: idle stretches are credited back
@@ -124,6 +126,14 @@ export class Engine extends EventEmitter {
     return this.activeItems().every((it) => this.pos(it) === this.steps.length)
       && this.steps.filter((s) => s.once).every((s) => DONE.has(store.itemCell(this.run, null, s.name).status));
   }
+  // wakes the engine when run_timeout would elapse while cells are still executing (ticks are otherwise event-driven)
+  armBudgetTimer() {
+    clearTimeout(this.budgetTimer); this.budgetTimer = null;
+    if (!this.active.size || this.run.pausedByUser) return;
+    const left = this.config.limits.run_timeout * 1000 - (Date.now() - Date.parse(this.run.budgets.since));
+    this.budgetTimer = setTimeout(() => { this.budgetTimer = null; this.scheduleTick(); }, Math.max(left, 0) + 50);
+    this.budgetTimer.unref?.();
+  }
   // true when nothing new may start: paused by the user, or a run-wide budget just tripped
   checkBudgets() {
     if (this.run.pausedByUser || this.isFinished()) return this.run.pausedByUser;
@@ -183,14 +193,12 @@ export class Engine extends EventEmitter {
 
   launch(item, step) {
     const key = this.key(item, step);
-    if (!this.active.size) {   // leaving idle: move the budget clock forward by the time nothing ran, then arm it
+    if (!this.active.size) {   // leaving idle: move the budget clock forward by the time nothing ran
       const b = this.run.budgets;
       b.since = new Date(Date.parse(b.since) + (Date.now() - this.idleSince)).toISOString();
-      const left = this.config.limits.run_timeout * 1000 - (Date.now() - Date.parse(b.since));
-      this.budgetTimer = setTimeout(() => { this.budgetTimer = null; this.scheduleTick(); }, Math.max(left, 0) + 50);
-      this.budgetTimer.unref?.();
     }
     this.active.set(key, { step: step.name, agent: !!step.agent });
+    this.armBudgetTimer();
     this.execCell(item, step)
       .catch((e) => {
         try { const c = this.cell(item, step); c.error = `engine error: ${e.message}`; this.finish(item, step, c, 'paused'); }
@@ -334,7 +342,11 @@ export class Engine extends EventEmitter {
     const limit = this.config.limits.max_new_items ?? 50;
     if (fresh.length > limit) throw new Error(`step ${step.name} produced ${fresh.length} new items (limit ${limit}) — check the expression or raise limits.max_new_items`);
     for (const raw of fresh) {
-      this.run.items.push({ ...raw, status: 'active', addedAt: now() });
+      // fields from a step's output are data: dir must stay under projects_root, link must be a safe URL
+      const it = { ...raw, status: 'active', addedAt: now() };
+      if (it.dir !== undefined) it.dir = this.projectDir?.(it.dir) ?? undefined;
+      if (it.link !== undefined) { try { it.link = checkLink(it.link); } catch { it.link = null; } }
+      this.run.items.push(it);
       // each-steps up to and including the producer never ran for this item; later ones start pending
       this.steps.forEach((s, k) => { if (s.each) store.itemCell(this.run, raw.name, s.name).status = k <= idx ? 'n/a' : 'pending'; });
     }
@@ -376,6 +388,7 @@ export class Engine extends EventEmitter {
   }
   async abortItem(itemName) {
     const it = this.item(itemName);
+    if (!it) throw new Error(`unknown item ${itemName} (items: ${this.run.items.map((i) => i.name).join(', ') || 'none'})`);
     it.status = 'aborted';
     for (const s of this.steps) if (s.each && !DONE.has(this.cell(it, s).status)) await this.failCell(this.cell(it, s), 'item aborted');
     this.changed({ type: 'item.aborted', item: itemName, by: 'user' });
@@ -395,6 +408,7 @@ export class Engine extends EventEmitter {
     if (this.run.note?.startsWith('budget:')) this.run.budgets = { agentCalls: 0, since: new Date(Date.now() + 1000).toISOString() };
     this.run.note = null;
     this.changed({ type: 'run.resume', by: 'user' });
+    this.armBudgetTimer();   // cells may still be executing from before the pause
     this.scheduleTick();
   }
 
