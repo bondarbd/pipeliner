@@ -124,8 +124,8 @@ fenced-блоком с пометкой «данные, не инструкци�
 
 Единый синтаксис `${{ expr }}`, вычисляется в `node:vm` с таймаутом 100 мс, без `require` и
 сети. Если выражение — весь скаляр, тип результата сохраняется; внутри строки — приводится к
-строке. Доступно: `run.params.*`, `run.env.*` (только whitelist шага), `run.items[]`,
-`run.steps.<once-step>.*`, `run.skills`, `run.dir`, `run.id`; `item.name`, `item.dir`,
+строке. Доступно: `run.params.*`, `run.env.*` (только whitelist шага), `run.items[]` (каждый
+элемент — с `steps.<step>.*`, результатами его each-шагов), `run.steps.<once-step>.*`, `run.skills`, `run.dir`, `run.id`; `item.name`, `item.dir`,
 `item.*`, `item.steps.<step>.*`, `item.ctx`; `output` — только в `items:`.
 
 При подстановке в `shell` каждое значение проверяется регуляркой

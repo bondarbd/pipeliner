@@ -1,4 +1,5 @@
 .superpowers/
+.idea/
 node_modules/
 public/vendor/
 .DS_Store

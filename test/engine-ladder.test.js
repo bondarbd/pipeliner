@@ -91,10 +91,9 @@ test('max_attempts budget pauses automatic retries, but a user retry grants a fr
   engine.start(); await engine.idle();
   assert.equal(run.cells.a.s.attempts, 1);
   assert.match(run.cells.a.s.error, /budget: max_attempts/);
-  // per-cell retry allowance: a user-triggered retry lets the cell run again instead of
-  // re-pausing on the budget immediately.
+  // a user-triggered retry resets the counter, so the cell runs again instead of re-pausing on the budget
   engine.retry('a', 's'); await engine.idle();
-  assert.equal(run.cells.a.s.attempts, 2);
+  assert.equal(run.cells.a.s.attempts, 1);
   assert.match(run.cells.a.s.error, /budget: max_attempts/);
 });
 

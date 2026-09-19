@@ -44,13 +44,13 @@ test('structural errors', () => {
   assert.ok(m.some((x) => x.includes('duplicate step name branch')));
 });
 
-test('ladder must end with a terminal rung; unknown step refs are reported with a suggestion', () => {
+test('ladder must end with a terminal rung; unknown step refs are reported', () => {
   const t = ok();
   t.steps[1].on_fail = [{ do: 'retry', times: 1 }];
   t.steps[1].shell = 'echo ${{ item.steps.brnch.commit }}';
   const m = msgs(t);
   assert.ok(m.some((x) => x.includes('last rung must be pause|skip_item|abort')));
-  assert.ok(m.some((x) => x.includes("unknown or later step 'brnch' (did you mean 'branch'?)")));
+  assert.ok(m.some((x) => x.includes("unknown or later step 'brnch'")));
 });
 
 test('loadTemplates reads yaml dirs, later dir overrides, invalid files are reported', () => {

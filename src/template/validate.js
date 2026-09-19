@@ -7,18 +7,6 @@ const TERMINAL = ['pause', 'skip_item', 'abort'];
 
 export function bodyKind(step) { return BODIES.find((b) => step[b] !== undefined); }
 
-function levenshtein(a, b) {
-  const m = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
-  for (let j = 1; j <= b.length; j++) m[0][j] = j;
-  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
-    m[i][j] = Math.min(m[i - 1][j] + 1, m[i][j - 1] + 1, m[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-  return m[a.length][b.length];
-}
-function suggest(name, known) {
-  const best = known.map((k) => [levenshtein(name, k), k]).sort((x, y) => x[0] - y[0])[0];
-  return best && best[0] <= 2 ? ` (did you mean '${best[1]}'?)` : '';
-}
-
 export function validateTemplate(tpl) {
   const errs = [];
   const err = (p, m) => errs.push({ path: p, message: m });
@@ -79,7 +67,7 @@ export function validateTemplate(tpl) {
       }
     }
     for (const ref of references(s)) {
-      if (!seen.has(ref.step)) err(p, `reference to unknown or later step '${ref.step}'${suggest(ref.step, [...seen])}`);
+      if (!seen.has(ref.step)) err(p, `reference to unknown or later step '${ref.step}' (known so far: ${[...seen].join(', ') || 'none'})`);
     }
     seen.add(s.name);
   });

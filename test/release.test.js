@@ -34,8 +34,7 @@ test('release template: check short-circuits, retry on build, report and verifie
   assert.equal(run.once.report.status, 'success');
   const md = fs.readFileSync(run.once.report.output.path, 'utf8');
   assert.match(md, /\| app1 \| `release\/0.247` \| \[#42\]/);
-  // item name with a space/Cyrillic: safe() must be used for the on-disk items/<name> path
-  // (src/engine/store.js), or its step outputs never get read and the report row shows '-'.
+  // item name with a space/Cyrillic must still get its step outputs into the report
   const two = run.once.report.output.rows.find((r) => r.project === 'app два');
   assert.ok(two, JSON.stringify(run.once.report.output.rows));
   assert.notEqual(two.commit, '-');

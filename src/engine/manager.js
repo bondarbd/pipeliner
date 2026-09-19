@@ -74,11 +74,11 @@ export class Manager {
       return it;
     });
   }
+  // what the user confirms when trusting a template: every command it may run, plus its sidecar scripts
   templateCommands(t) {
-    const tpl = t.tpl || t;
-    return tpl.steps.map((s) => { const k = bodyKind(s); return `${s.name} [${k}]: ${k === 'shell' ? s.shell : k === 'js' ? s.js : k === 'agent' ? s.agent.prompt.split('\n')[0] : s.human.question}`.trim(); })
-      .concat(tpl.steps.flatMap((s) => [s.check && `${s.name} check: ${s.check}`, s.verify && `${s.name} verify: ${s.verify}`].filter(Boolean)))
-      .concat((t.sidecars || []).map((p) => `sidecar: ${p}`));
+    const body = (s) => s.shell ?? s.js ?? s.agent?.prompt.split('\n')[0] ?? s.human?.question;
+    return t.tpl.steps.flatMap((s) => [`${s.name} [${bodyKind(s)}]: ${body(s)}`, s.check && `${s.name} check: ${s.check}`, s.verify && `${s.name} verify: ${s.verify}`])
+      .filter(Boolean).concat((t.sidecars || []).map((p) => `sidecar: ${p}`));
   }
   trustFile() { return path.join(this.home, 'trusted.json'); }
   trusted(name, hash) { try { return JSON.parse(fs.readFileSync(this.trustFile(), 'utf8'))[name] === hash; } catch { return false; } }

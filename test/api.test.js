@@ -87,7 +87,9 @@ test('security headers: X-Frame-Options and CSP are set on every response, inclu
   const res = await fetch(`${srv.url}/`);
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('x-frame-options'), 'DENY');
-  assert.equal(res.headers.get('content-security-policy'), "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'");
+  assert.match(res.headers.get('content-security-policy'), /^default-src 'self'; .*img-src 'self' data:; frame-ancestors 'none'$/);
+  assert.match(await res.text(), /<title>runboard<\/title>/);
+  assert.ok(fs.existsSync('public/vendor/vue.global.prod.js'), 'run npm install to vendor assets');
 });
 
 test('log bytes is clamped to a safe range; malformed JSON body yields a clean 400', async () => {

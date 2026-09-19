@@ -53,7 +53,7 @@ export function createRun(home, { template, params = {}, items = [], mode = 'all
     items: items.map((it) => ({ status: 'active', ...it })),
     cells: {}, once: {},
     pilot: mode === 'pilot' && items.length ? { item: items[0].name, status: 'running' } : null,
-    pilotNotes: null, budgets: { agentCalls: 0 }, seq: 0, history: [],
+    pilotNotes: null, budgets: { agentCalls: 0, since: now }, seq: 0, history: [],
   };
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   ensureDirs(run, null);

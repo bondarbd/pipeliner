@@ -49,7 +49,7 @@ test('agent-call budget and run timeout pause the run with a note', async () => 
   assert.equal(run.pausedByUser, false);
 
   const t = mkEngine({ items: [{ name: 'a' }], steps: [{ name: 's', each: true, shell: 'x' }], config: { limits: { run_timeout: 0 } } });
-  t.run.createdAt = new Date(Date.now() - 5000).toISOString();
+  t.run.budgets.since = new Date(Date.now() - 5000).toISOString();
   t.engine.start(); await t.engine.idle();
   assert.match(t.run.note, /run_timeout/);
   t.engine.resumeRun(); await t.engine.idle();

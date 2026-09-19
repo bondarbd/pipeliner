@@ -11,13 +11,21 @@ import { bodyKind } from '../template/validate.js';
 export const DONE = new Set(['success', 'skipped', 'n/a']);
 const STUCK = new Set(['paused', 'failed', 'interrupted', 'unverified']);
 const TERMINAL_RUN = new Set(['done', 'aborted']);
+const RETRIABLE = ['paused', 'interrupted', 'unverified', 'failed', 'skipped'];
+const SKIPPABLE = ['paused', 'interrupted', 'unverified', 'failed', 'pending', 'waiting'];
+const YES = ['Да', 'да', 'Yes', 'yes'];
+const NO = ['Нет', 'нет', 'No', 'no'];
+
+const now = () => new Date().toISOString();
+// runner context for a helper command (check / verify / diagnose) of the same cell: own log file
+const sub = (r, kind) => ({ ...r, logPath: r.logPath.replace(/\.log$/, `.${kind}.log`) });
 
 export class Engine extends EventEmitter {
   constructor({ run, config, runners, envValues = {}, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
     super();
     this.run = run; this.config = config; this.runners = runners; this.envValues = envValues; this.sleep = sleep;
     this.masker = createMasker(Object.values(envValues));
-    this.active = new Map();     // "item:step" -> { step, agent, pid }
+    this.active = new Map();     // "item:step" -> { step, agent }
     this.timers = new Set();
     this.ticking = false; this.tickQueued = false;
     this.idleWaiters = [];
@@ -26,8 +34,10 @@ export class Engine extends EventEmitter {
   // ---- helpers
   get steps() { return this.run.steps; }
   item(name) { return this.run.items.find((i) => i.name === name); }
+  step(name) { return this.steps.find((s) => s.name === name); }
   cell(item, step) { return store.itemCell(this.run, item ? item.name : null, step.name); }
   key(item, step) { return `${item ? item.name : '*'}:${step.name}`; }
+  aborted() { return this.run.status === 'aborted'; }
   activeItems() { return this.run.items.filter((i) => i.status === 'active'); }
   *allCells() {
     for (const s of this.steps) {
@@ -36,17 +46,23 @@ export class Engine extends EventEmitter {
     }
   }
   pos(item) {
-    for (let i = 0; i < this.steps.length; i++) {
-      const s = this.steps[i];
-      const c = s.once ? store.itemCell(this.run, null, s.name) : this.cell(item, s);
-      if (!DONE.has(c.status)) return i;
-    }
-    return this.steps.length;
+    const i = this.steps.findIndex((s) => !DONE.has((s.once ? store.itemCell(this.run, null, s.name) : this.cell(item, s)).status));
+    return i === -1 ? this.steps.length : i;
   }
   changed(ev) {
     if (ev) store.addEvent(this.run, ev);
     store.saveRun(this.run);
     this.emit('change', this.run);
+  }
+  // closes a cell in a final (or paused) status and records the event
+  finish(item, step, c, status, ev = {}) {
+    c.status = status; c.finishedAt = now(); c.pid = null;
+    if (c.startedAt) ev.durationMs = Date.parse(c.finishedAt) - Date.parse(c.startedAt);
+    this.changed({ type: `cell.${status}`, item: item?.name, step: step.name, error: c.error || undefined, ...ev });
+  }
+  pause(note, type) {
+    this.run.pausedByUser = true; this.run.note = note;
+    this.changed({ type });
   }
   exprCtx(item, step, output) {
     return buildCtx({ run: this.run, item, config: this.config, env: this.envFor(step), output });
@@ -69,7 +85,7 @@ export class Engine extends EventEmitter {
       notes: store.readNotes(this.run, item ? item.name : null, 8192),
       pilotNotes: item && this.run.pilot && item.name !== this.run.pilot.item ? this.run.pilotNotes : null,
       templateDir: this.run.templateDir, itemCtxDir: p.ctxDir, runCtxDir: store.paths(this.run, null).ctxDir,
-      onSpawn: (pid) => { c.pid = pid; const a = this.active.get(this.key(item, step)); if (a) a.pid = pid; store.saveRun(this.run); },
+      onSpawn: (pid) => { c.pid = pid; store.saveRun(this.run); },
       countAgentCall: () => { this.run.budgets.agentCalls++; },
     };
   }
@@ -93,8 +109,7 @@ export class Engine extends EventEmitter {
     this.ticking = true;
     try {
       if (TERMINAL_RUN.has(this.run.status)) return;
-      this.checkRunTimeout();
-      if (!this.run.pausedByUser && !this.budgetExceeded()) this.startRunnable();
+      if (!this.checkBudgets()) this.startRunnable();
       this.updateRunStatus();
     } finally {
       this.ticking = false;
@@ -103,28 +118,16 @@ export class Engine extends EventEmitter {
   }
 
   isFinished() {
-    const items = this.activeItems();
-    return items.every((it) => this.pos(it) === this.steps.length)
+    return this.activeItems().every((it) => this.pos(it) === this.steps.length)
       && this.steps.filter((s) => s.once).every((s) => DONE.has(store.itemCell(this.run, null, s.name).status));
   }
-  checkRunTimeout() {
-    if (this.run.pausedByUser || this.isFinished()) return;
-    const base = this.run.timeoutBase ?? this.run.createdAt;
-    const age = Date.now() - Date.parse(base);
-    if (age > this.config.limits.run_timeout * 1000) {
-      this.run.pausedByUser = true; this.run.note = 'budget: run_timeout exceeded — resume to continue';
-      this.changed({ type: 'run.timeout' });
-    }
-  }
-  budgetExceeded() {
-    if (this.isFinished()) return false;
-    const limit = this.run.budgets.agentCallsLimit ?? this.config.limits.max_agent_calls;
-    if (this.run.budgets.agentCalls < limit) return false;
-    if (!this.run.pausedByUser) {
-      this.run.pausedByUser = true; this.run.note = `budget: max_agent_calls (${this.config.limits.max_agent_calls}) exhausted — resume to continue`;
-      this.changed({ type: 'run.budget' });
-    }
-    return true;
+  // true when nothing new may start: paused by the user, or a run-wide budget just tripped
+  checkBudgets() {
+    if (this.run.pausedByUser || this.isFinished()) return this.run.pausedByUser;
+    const { limits } = this.config; const b = this.run.budgets;
+    if (Date.now() - Date.parse(b.since) > limits.run_timeout * 1000) this.pause('budget: run_timeout exceeded — resume to continue', 'run.timeout');
+    else if (b.agentCalls >= limits.max_agent_calls) this.pause(`budget: max_agent_calls (${limits.max_agent_calls}) exhausted — resume to continue`, 'run.budget');
+    return this.run.pausedByUser;
   }
 
   startRunnable() {
@@ -138,9 +141,7 @@ export class Engine extends EventEmitter {
         if (positions.get(item.name) !== i) continue;
         if (this.run.pilot && this.run.pilot.status !== 'approved' && item.name !== this.run.pilot.item) continue;
         const c = this.cell(item, step);
-        if (c.status !== 'pending' || c.retryAt) continue;
-        if (!this.hasSlot(step)) continue;
-        this.launch(item, step);
+        if (c.status === 'pending' && !c.retryAt && this.hasSlot(step)) this.launch(item, step);
       }
     }
   }
@@ -148,10 +149,9 @@ export class Engine extends EventEmitter {
     const p = this.run.pilot;
     if (!p || p.status !== 'running') return;
     const pilot = items.find((i) => i.name === p.item);
-    if (!pilot) { p.status = 'approved'; this.changed({ type: 'pilot.auto_approved' }); return; }
     const firstOnce = this.steps.findIndex((s) => s.once);
     const limit = firstOnce === -1 ? this.steps.length : firstOnce;
-    if (limit === 0) { p.status = 'approved'; this.changed({ type: 'pilot.auto_approved' }); return; }
+    if (!pilot || limit === 0) { p.status = 'approved'; this.changed({ type: 'pilot.auto_approved' }); return; }
     if (positions.get(pilot.name) >= limit) { p.status = 'waiting'; this.changed({ type: 'pilot.waiting' }); }
   }
 
@@ -159,15 +159,12 @@ export class Engine extends EventEmitter {
     const c = store.itemCell(this.run, null, step.name);
     if (c.status !== 'pending' || c.retryAt) return;
     if (this.run.pilot && this.run.pilot.status !== 'approved') return;
-    const policy = step.barrier || 'all';
-    const blockers = items.filter((it) => {
+    const blocked = items.some((it) => {
       const p = positions.get(it.name);
       if (p >= i) return false;
-      if (policy === 'succeeded') { const cur = this.cell(it, this.steps[p]); return !STUCK.has(cur.status); }
-      return true;
+      return step.barrier !== 'succeeded' || !STUCK.has(this.cell(it, this.steps[p]).status);
     });
-    if (blockers.length || !this.hasSlot(step)) return;
-    this.launch(null, step);
+    if (!blocked && this.hasSlot(step)) this.launch(null, step);
   }
 
   hasSlot(step) {
@@ -180,109 +177,70 @@ export class Engine extends EventEmitter {
 
   launch(item, step) {
     const key = this.key(item, step);
-    this.active.set(key, { step: step.name, agent: !!step.agent, pid: null });
+    this.active.set(key, { step: step.name, agent: !!step.agent });
     this.execCell(item, step)
-      .catch((e) => {
-        const c = this.cell(item, step);
-        c.status = 'paused'; c.error = `engine error: ${e.message}`; c.finishedAt = new Date().toISOString();
-        this.changed({ type: 'cell.error', item: item?.name, step: step.name, error: e.message });
-      })
+      .catch((e) => { const c = this.cell(item, step); c.error = `engine error: ${e.message}`; this.finish(item, step, c, 'paused'); })
       .finally(() => { this.active.delete(key); this.scheduleTick(); });
-  }
-
-  eventMeta(c, res) {
-    const ev = {};
-    if (res && res.code !== undefined) ev.code = res.code;
-    if (c.startedAt && c.finishedAt) ev.durationMs = Date.parse(c.finishedAt) - Date.parse(c.startedAt);
-    return ev;
   }
 
   async execCell(item, step) {
     const c = this.cell(item, step);
     const ctx = this.exprCtx(item, step);
-    if (step.when !== undefined && !render(step.when, ctx)) {
-      c.status = 'skipped'; c.error = 'when: false'; c.finishedAt = new Date().toISOString();
-      this.changed({ type: 'cell.skipped', item: item?.name, step: step.name });
-      return;
-    }
-    if (c.attempts >= (c.attemptsLimit ?? this.config.limits.max_attempts)) {
-      c.status = 'paused'; c.error = `budget: max_attempts (${this.config.limits.max_attempts})`; c.finishedAt = new Date().toISOString();
-      this.changed({ type: 'cell.budget', item: item?.name, step: step.name });
-      return;
-    }
+    if (step.when !== undefined && !render(step.when, ctx)) { c.error = 'when: false'; return this.finish(item, step, c, 'skipped'); }
+    if (c.attempts >= this.config.limits.max_attempts) { c.error = `budget: max_attempts (${this.config.limits.max_attempts})`; return this.finish(item, step, c, 'paused'); }
     c.attempts++; c.seq = store.nextSeq(this.run); c.status = 'running';
-    c.startedAt = new Date().toISOString(); c.finishedAt = null; c.error = null; c.waiting = null; c.note = null;
+    c.startedAt = now(); c.finishedAt = null; c.error = null; c.waiting = null; c.note = null;
     const r = this.rctx(item, step, c, ctx);
     this.changed({ type: 'cell.started', item: item?.name, step: step.name, attempt: c.attempts, seq: c.seq });
-    let lockHeld = null;
+    let lock = null;
     try {
-      lockHeld = await this.takeLock(step, ctx, c);
-      if (this.run.status === 'aborted') return;
-      if (await this.runCheck(item, step, c, r)) return;
-      if (this.run.status === 'aborted') return;
+      if (step.resource) {
+        const res = render(step.resource, ctx);
+        c.note = `waiting for lock ${res}`; this.changed();
+        try { await locks.acquire(this.config.home, res, { owner: this.run.id, waitMs: this.config.limits.lock_wait * 1000 }); lock = res; }
+        catch (e) { if (!(e instanceof locks.LockBusy)) throw e; c.attempts--; c.error = e.message; return this.finish(item, step, c, 'paused'); }
+        finally { c.note = null; }
+      }
+      if (this.aborted() || await this.runCheck(item, step, c, r) || this.aborted()) return;
       const res = await this.runners[bodyKind(step)].run(step, r);
-      if (this.run.status === 'aborted') return;
+      if (this.aborted()) return;
       if (res.command) c.command = this.masker.mask(res.command);
       c.pid = null;
-      if (res.waiting) { c.status = 'waiting'; c.waiting = res.waiting; c.needInput = false; this.changed({ type: 'cell.waiting', item: item?.name, step: step.name }); return; }
-      if (res.needInput) { c.status = 'waiting'; c.waiting = { question: res.needInput, options: [], fields: [] }; c.needInput = true; this.changed({ type: 'cell.need_input', item: item?.name, step: step.name }); return; }
+      if (res.waiting || res.needInput) {
+        c.status = 'waiting'; c.needInput = !!res.needInput;
+        c.waiting = res.waiting || { question: res.needInput, options: [], fields: [] };
+        return this.changed({ type: 'cell.waiting', item: item?.name, step: step.name });
+      }
       if (!res.ok) {
         c.error = res.error || 'failed';
-        if (res.dirtyAfterKill) {
-          c.status = 'paused'; c.noRetry = true; c.error = `dirty_after_kill: ${c.error}`; c.finishedAt = new Date().toISOString();
-          this.changed({ type: 'cell.paused', item: item?.name, step: step.name, error: c.error, ...this.eventMeta(c, res) });
-          return;
-        }
-        await this.applyLadder(item, step, c, r, res);
-        return;
+        if (!res.dirtyAfterKill) return this.applyLadder(item, step, c, r, res);
+        c.noRetry = true; c.error = `dirty_after_kill: ${c.error}`;
+        return this.finish(item, step, c, 'paused', { code: res.code });
       }
-      const verified = await this.runVerify(item, step, c, r);
-      if (this.run.status === 'aborted') return;
-      if (!verified) { await this.applyLadder(item, step, c, r, res); return; }
+      if (step.verify) {
+        const v = await this.runners.shell.run({ name: `${step.name}#verify`, shell: step.verify, output: 'text' }, sub(r, 'verify'));
+        if (this.aborted()) return;
+        if (!v.ok) { c.error = `verify failed: ${v.error}`; this.finish(item, step, c, 'unverified', { code: v.code }); return this.applyLadder(item, step, c, r, res); }
+      }
       this.finishSuccess(item, step, c, res.output || {}, 'run', res);
-    } catch (e) {
-      if (e instanceof locks.LockBusy) {
-        c.status = 'paused'; c.error = e.message; c.attempts--; c.finishedAt = new Date().toISOString();
-        this.changed({ type: 'cell.lock_busy', item: item?.name, step: step.name, error: e.message });
-        return;
-      }
-      throw e;
     } finally {
-      if (lockHeld) locks.release(this.config.home, lockHeld, this.run.id);
+      if (lock) locks.release(this.config.home, lock, this.run.id);
     }
   }
-  async takeLock(step, ctx, c) {
-    if (!step.resource) return null;
-    const res = render(step.resource, ctx);
-    c.note = `waiting for lock ${res}`;
-    this.changed();
-    try { await locks.acquire(this.config.home, res, { owner: this.run.id, waitMs: this.config.limits.lock_wait * 1000 }); }
-    finally { c.note = null; }
-    return res;
-  }
+  // idempotency probe: a passing `check` finishes the cell without running the body
   async runCheck(item, step, c, r) {
     if (!step.check) return false;
-    const chk = await this.runners.shell.run({ name: `${step.name}#check`, shell: step.check, output: step.output || 'keys' }, { ...r, logPath: r.logPath.replace(/\.log$/, '.check.log') });
-    if (!chk.ok) return false;
-    this.finishSuccess(item, step, c, chk.output || {}, 'check', chk);
-    return true;
-  }
-  async runVerify(item, step, c, r) {
-    if (!step.verify) return true;
-    const v = await this.runners.shell.run({ name: `${step.name}#verify`, shell: step.verify, output: 'text' }, { ...r, logPath: r.logPath.replace(/\.log$/, '.verify.log') });
-    if (v.ok) return true;
-    c.status = 'unverified'; c.error = `verify failed: ${v.error}`; c.finishedAt = new Date().toISOString();
-    this.changed({ type: 'cell.unverified', item: item?.name, step: step.name, error: c.error, ...this.eventMeta(c, v) });
-    return false;
+    const chk = await this.runners.shell.run({ name: `${step.name}#check`, shell: step.check, output: step.output || 'keys' }, sub(r, 'check'));
+    if (chk.ok) this.finishSuccess(item, step, c, chk.output || {}, 'check', chk);
+    return chk.ok;
   }
 
   async recover() {
-    for (const [itemName, step, c] of this.allCells()) {
-      if (c.status === 'running') {
+    for (const [, step, c] of this.allCells()) {
+      if (c.status === 'running' || (c.status === 'waiting' && !c.needInput && !step.human)) {
         c.status = 'interrupted'; c.error = 'panel restarted during this step'; c.orphanPid = c.pid; c.pid = null;
       }
-      if (c.status === 'pending' && c.retryAt) c.retryAt = null;
-      if (c.status === 'waiting' && !c.needInput && !step.human) { c.status = 'interrupted'; c.error = 'panel restarted while waiting'; }
+      c.retryAt = null;
     }
     if (this.run.status === 'running') this.run.status = 'paused';
     this.changed({ type: 'run.recovered' });
@@ -290,137 +248,52 @@ export class Engine extends EventEmitter {
       if (c.status !== 'interrupted' || !step.check) continue;
       const item = itemName ? this.item(itemName) : null;
       c.seq = store.nextSeq(this.run);
-      const r = this.rctx(item, step, c, this.exprCtx(item, step));
-      await this.runCheck(item, step, c, r);
+      await this.runCheck(item, step, c, this.rctx(item, step, c, this.exprCtx(item, step)));
     }
     return this.start();
   }
 
   async applyLadder(item, step, c, r, res) {
-    if (this.run.status === 'aborted') return;
     const rungs = step.on_fail || [{ do: 'pause' }];
-    const pause = () => {
-      c.status = 'paused'; c.finishedAt = new Date().toISOString();
-      this.changed({ type: 'cell.paused', item: item?.name, step: step.name, error: c.error, ...this.eventMeta(c, res) });
-    };
-    while (c.rung < rungs.length) {
-      if (this.run.status === 'aborted') return;
+    while (!this.aborted()) {
       const rung = rungs[c.rung];
-      if (rung.do === 'retry') {
-        if (c.retriesUsed < rung.times) {
-          c.retriesUsed++; c.status = 'pending';
-          const delayMs = (rung.delay || 0) * 1000;
-          if (delayMs) {
-            c.retryAt = Date.now() + delayMs;
-            const t = setTimeout(() => { this.timers.delete(t); c.retryAt = null; this.scheduleTick(); }, delayMs);
-            this.timers.add(t);
-          }
-          this.changed({ type: 'cell.retry_scheduled', item: item?.name, step: step.name, delayMs });
-          return;
+      if (!rung || rung.do === 'pause') return this.finish(item, step, c, 'paused', { code: res.code });
+      if (rung.do === 'retry' && c.retriesUsed < rung.times) {
+        c.retriesUsed++; c.status = 'pending';
+        const delayMs = (rung.delay || 0) * 1000;
+        if (delayMs) {
+          c.retryAt = Date.now() + delayMs;
+          const t = setTimeout(() => { this.timers.delete(t); c.retryAt = null; this.scheduleTick(); }, delayMs);
+          this.timers.add(t);
         }
-        c.rung++; continue;
+        return this.changed({ type: 'cell.retry_scheduled', item: item?.name, step: step.name, delayMs });
       }
       if (rung.do === 'agent') {
         if (!c.diagnosed) {
           c.diagnosed = true; c.note = 'diagnosing';
           this.changed({ type: 'cell.diagnose', item: item?.name, step: step.name });
           const diag = { name: `${step.name}#diagnose`, agent: { prompt: rung.prompt, readonly: true }, output: 'text' };
-          try { await this.runners.agent.run(diag, { ...r, logPath: r.logPath.replace(/\.log$/, '.diagnose.log') }); }
+          try { await this.runners.agent.run(diag, sub(r, 'diagnose')); }
           catch (e) { store.addEvent(this.run, { type: 'cell.diagnose_failed', item: item?.name, step: step.name, error: e.message }); }
           c.note = null;
-          if (this.run.status === 'aborted') return;
+          if (this.aborted()) return;
         }
-        if (rung.then === 'pause') { pause(); return; }
-        c.rung++; continue;
+        if (rung.then === 'pause') return this.finish(item, step, c, 'paused', { code: res.code });
       }
-      if (rung.do === 'pause') { pause(); return; }
-      if (rung.do === 'skip_item') {
-        c.status = 'skipped'; c.finishedAt = new Date().toISOString(); if (item) item.status = 'skipped';
-        this.changed({ type: 'item.skipped', item: item?.name, step: step.name, error: c.error });
-        return;
-      }
-      if (rung.do === 'abort') {
-        c.status = 'failed'; c.finishedAt = new Date().toISOString();
-        await this.abort(`step ${step.name} failed on ${item ? item.name : 'run'}: ${c.error}`);
-        return;
-      }
+      if (rung.do === 'skip_item') { if (item) item.status = 'skipped'; return this.finish(item, step, c, 'skipped'); }
+      if (rung.do === 'abort') { this.finish(item, step, c, 'failed'); return this.abort(`step ${step.name} failed on ${item ? item.name : 'run'}: ${c.error}`); }
       c.rung++;
     }
-    pause();
-  }
-
-  // ---- user actions
-  retry(itemName, stepName) {
-    if (TERMINAL_RUN.has(this.run.status)) throw new Error(`run is ${this.run.status}`);
-    const c = store.itemCell(this.run, itemName, stepName);
-    if (!['paused', 'interrupted', 'unverified', 'failed', 'skipped'].includes(c.status)) throw new Error(`cannot retry cell in status ${c.status}`);
-    if (c.noRetry) throw new Error(`retry blocked: ${c.error}`);
-    c.attemptsLimit = c.attempts + this.config.limits.max_attempts;
-    c.status = 'pending'; c.error = null; c.retryAt = null;
-    if (itemName) { const it = this.item(itemName); if (it.status !== 'active') it.status = 'active'; }
-    if (this.run.status === 'done') this.run.status = 'running';
-    this.changed({ type: 'cell.retry', item: itemName, step: stepName, by: 'user' });
-    this.scheduleTick();
-  }
-  skipCell(itemName, stepName) {
-    if (TERMINAL_RUN.has(this.run.status)) throw new Error(`run is ${this.run.status}`);
-    const c = store.itemCell(this.run, itemName, stepName);
-    if (!['paused', 'interrupted', 'unverified', 'failed', 'pending', 'waiting'].includes(c.status)) throw new Error(`cannot skip cell in status ${c.status}`);
-    c.status = 'skipped'; c.waiting = null; c.finishedAt = new Date().toISOString();
-    this.changed({ type: 'cell.skip', item: itemName, step: stepName, by: 'user' });
-    this.scheduleTick();
-  }
-  async killCell(c) { if (c.pid) { await killGroup(c.pid); c.pid = null; } }
-  async abortItem(itemName) {
-    const it = this.item(itemName);
-    it.status = 'aborted';
-    for (const s of this.steps) if (s.each) {
-      const c = this.cell(it, s);
-      if (!DONE.has(c.status)) {
-        if (c.status === 'running') await this.killCell(c);
-        c.status = 'failed'; c.waiting = null; c.finishedAt = new Date().toISOString();
-      }
-    }
-    this.changed({ type: 'item.aborted', item: itemName, by: 'user' });
-    this.scheduleTick();
-  }
-  async abort(reason) {
-    this.run.status = 'aborted'; this.run.note = reason;
-    for (const a of this.active.values()) if (a.pid) await killGroup(a.pid);
-    for (const t of this.timers) clearTimeout(t);
-    this.timers.clear();
-    for (const [, , c] of this.allCells()) {
-      if (c.status === 'running') { c.status = 'failed'; c.error = 'run aborted'; c.waiting = null; c.finishedAt = new Date().toISOString(); }
-    }
-    this.run.finishedAt = new Date().toISOString();
-    this.changed({ type: 'run.aborted', reason });
-  }
-  pauseRun() { this.run.pausedByUser = true; this.changed({ type: 'run.pause', by: 'user' }); }
-  resumeRun() {
-    this.run.pausedByUser = false;
-    if (this.run.note && this.run.note.startsWith('budget:')) {
-      this.run.budgets.agentCallsLimit = this.run.budgets.agentCalls + this.config.limits.max_agent_calls;
-      // a small grace window so a zero/near-zero run_timeout doesn't re-trip on the very next tick
-      // before the resumed cell has had a chance to actually start.
-      this.run.timeoutBase = new Date(Date.now() + 1000).toISOString();
-    }
-    this.run.note = null;
-    this.changed({ type: 'run.resume', by: 'user' });
-    this.scheduleTick();
   }
 
   finishSuccess(item, step, c, output, how, res) {
-    if (step.items !== undefined && step.once) {
+    if (step.items !== undefined) {
       try { this.produceItems(step, output); }
-      catch (e) {
-        c.status = 'paused'; c.error = `items: ${e.message}`; c.finishedAt = new Date().toISOString();
-        this.changed({ type: 'cell.paused', item: item?.name, step: step.name, error: c.error });
-        return;
-      }
+      catch (e) { c.error = `items: ${e.message}`; return this.finish(item, step, c, 'paused'); }
     }
-    c.status = 'success'; c.output = output; c.finishedAt = new Date().toISOString(); c.waiting = null;
+    c.output = output; c.waiting = null;
     store.saveStepOutput(this.run, item ? item.name : null, step.name, output);
-    this.changed({ type: 'cell.success', item: item?.name, step: step.name, how, ...this.eventMeta(c, res) });
+    this.finish(item, step, c, 'success', { how, code: res?.code });
   }
   produceItems(step, output) {
     const list = render(step.items, this.exprCtx(null, step, output));
@@ -431,51 +304,91 @@ export class Engine extends EventEmitter {
     for (const raw of list) {
       if (!raw || !raw.name || existing.has(raw.name)) continue;
       existing.add(raw.name);
-      const it = { status: 'active', ...raw };
-      this.run.items.push(it);
-      for (let k = 0; k <= idx; k++) if (this.steps[k].each) store.itemCell(this.run, it.name, this.steps[k].name).status = 'n/a';
-      for (let k = idx + 1; k < this.steps.length; k++) if (this.steps[k].each) store.itemCell(this.run, it.name, this.steps[k].name);
+      this.run.items.push({ status: 'active', ...raw });
+      // each-steps up to and including the producer never ran for this item; later ones start pending
+      this.steps.forEach((s, k) => { if (s.each) store.itemCell(this.run, raw.name, s.name).status = k <= idx ? 'n/a' : 'pending'; });
       added++;
     }
-    if (list.length > 50) { this.run.pausedByUser = true; this.run.note = `step ${step.name} produced ${list.length} items — resume the run to continue`; }
+    if (list.length > 50) this.pause(`step ${step.name} produced ${list.length} items — resume the run to continue`, 'run.pause');
     store.addEvent(this.run, { type: 'items.added', step: step.name, count: added });
+  }
+
+  // ---- user actions
+  userCell(itemName, stepName, allowed, what) {
+    if (TERMINAL_RUN.has(this.run.status)) throw new Error(`run is ${this.run.status}`);
+    const c = store.itemCell(this.run, itemName, stepName);
+    if (!allowed.includes(c.status)) throw new Error(`cannot ${what} cell in status ${c.status}`);
+    return c;
+  }
+  retry(itemName, stepName) {
+    const c = this.userCell(itemName, stepName, RETRIABLE, 'retry');
+    if (c.noRetry) throw new Error(`retry blocked: ${c.error}`);
+    c.attempts = 0; c.status = 'pending'; c.error = null; c.retryAt = null;   // a user retry grants a fresh max_attempts allowance
+    if (itemName) this.item(itemName).status = 'active';
+    if (this.run.status === 'done') this.run.status = 'running';
+    this.changed({ type: 'cell.retry', item: itemName, step: stepName, by: 'user' });
+    this.scheduleTick();
+  }
+  skipCell(itemName, stepName) {
+    const c = this.userCell(itemName, stepName, SKIPPABLE, 'skip');
+    c.waiting = null;
+    this.finish(itemName ? this.item(itemName) : null, this.step(stepName), c, 'skipped', { by: 'user' });
+    this.scheduleTick();
+  }
+  async failCell(c, error) {
+    if (c.pid) await killGroup(c.pid);
+    c.status = 'failed'; c.error ??= error; c.pid = null; c.waiting = null; c.finishedAt = now();
+  }
+  async abortItem(itemName) {
+    const it = this.item(itemName);
+    it.status = 'aborted';
+    for (const s of this.steps) if (s.each && !DONE.has(this.cell(it, s).status)) await this.failCell(this.cell(it, s), 'item aborted');
+    this.changed({ type: 'item.aborted', item: itemName, by: 'user' });
+    this.scheduleTick();
+  }
+  async abort(reason) {
+    this.run.status = 'aborted'; this.run.note = reason; this.run.finishedAt = now();
+    for (const t of this.timers) clearTimeout(t);
+    this.timers.clear();
+    for (const [, , c] of this.allCells()) if (c.status === 'running') await this.failCell(c, 'run aborted');
+    this.changed({ type: 'run.aborted', reason });
+  }
+  pauseRun() { this.pause(null, 'run.pause'); }
+  resumeRun() {
+    this.run.pausedByUser = false;
+    // resuming after a budget pause grants a fresh allowance; +1s so a zero run_timeout doesn't re-trip on the next tick
+    if (this.run.note?.startsWith('budget:')) this.run.budgets = { agentCalls: 0, since: new Date(Date.now() + 1000).toISOString() };
+    this.run.note = null;
+    this.changed({ type: 'run.resume', by: 'user' });
+    this.scheduleTick();
   }
 
   answer(itemName, stepName, { answer, fields = {} } = {}) {
     if (TERMINAL_RUN.has(this.run.status)) throw new Error(`run is ${this.run.status}`);
-    if (itemName === '__pilot__') {
-      const p = this.run.pilot;
-      if (!p || p.status !== 'waiting') throw new Error('pilot is not waiting');
-      const approved = ['Да', 'yes', 'Yes', 'да'].includes(answer);
-      store.appendNotes(this.run, null, `pilot ${p.item}: ${answer}`, 'human');
-      if (approved) {
-        p.status = 'approved';
-        this.run.pilotNotes = store.readNotes(this.run, p.item, 8192) || null;
-        this.changed({ type: 'pilot.approved', by: 'user' });
-      } else {
-        p.status = 'running';
-        this.run.pausedByUser = true;
-        this.run.note = 'pilot rejected: fix the pilot item, then resume the run to be asked again';
-        this.changed({ type: 'pilot.rejected', by: 'user' });
-      }
-      this.scheduleTick();
-      return;
-    }
+    if (itemName === '__pilot__') return this.answerPilot(answer);
     const c = store.itemCell(this.run, itemName, stepName);
     if (c.status !== 'waiting') throw new Error(`cell ${itemName ?? '*'}:${stepName} is not waiting`);
     const extra = Object.keys(fields).length ? `\n${JSON.stringify(fields)}` : '';
     store.appendNotes(this.run, itemName, `Q: ${c.waiting.question}\nA: ${answer}${extra}`, 'human');
-    if (c.needInput) {
-      c.status = 'pending'; c.needInput = false; c.waiting = null; c.attempts--;
-      this.changed({ type: 'cell.input_given', item: itemName, step: stepName });
-      this.scheduleTick();
-      return;
-    }
-    const step = this.steps.find((s) => s.name === stepName);
-    const pauseOn = step.human?.pause_on || ['Нет', 'No', 'no', 'нет'];
+    const step = this.step(stepName); const item = itemName ? this.item(itemName) : null;
     c.waiting = null;
-    if (pauseOn.includes(answer)) { c.status = 'paused'; c.error = `answer: ${answer}`; c.finishedAt = new Date().toISOString(); this.changed({ type: 'cell.paused', item: itemName, step: stepName, error: c.error }); }
-    else this.finishSuccess(itemName ? this.item(itemName) : null, step, c, { answer, ...fields }, 'human');
+    if (c.needInput) { c.status = 'pending'; c.needInput = false; c.attempts--; this.changed({ type: 'cell.input_given', item: itemName, step: stepName }); }
+    else if ((step.human?.pause_on || NO).includes(answer)) { c.error = `answer: ${answer}`; this.finish(item, step, c, 'paused'); }
+    else this.finishSuccess(item, step, c, { answer, ...fields }, 'human');
+    this.scheduleTick();
+  }
+  answerPilot(answer) {
+    const p = this.run.pilot;
+    if (!p || p.status !== 'waiting') throw new Error('pilot is not waiting');
+    store.appendNotes(this.run, null, `pilot ${p.item}: ${answer}`, 'human');
+    if (YES.includes(answer)) {
+      p.status = 'approved';
+      this.run.pilotNotes = store.readNotes(this.run, p.item, 8192) || null;
+      this.changed({ type: 'pilot.approved', by: 'user' });
+    } else {
+      p.status = 'running';
+      this.pause('pilot rejected: fix the pilot item, then resume the run to be asked again', 'pilot.rejected');
+    }
     this.scheduleTick();
   }
 
@@ -483,17 +396,13 @@ export class Engine extends EventEmitter {
     const run = this.run;
     if (TERMINAL_RUN.has(run.status)) return;
     const cells = [...this.allCells()].map(([, , c]) => c);
-    const waiting = cells.some((c) => c.status === 'waiting') || run.pilot?.status === 'waiting';
-    const running = this.active.size > 0 || this.timers.size > 0 || cells.some((c) => c.status === 'running');
-    const finished = this.isFinished();
-    let status;
-    if (running) status = 'running';
-    else if (waiting) status = 'waiting_for_human';
-    else if (finished) status = 'done';
-    else status = 'paused';
+    let status = 'paused';
+    if (this.active.size || this.timers.size || cells.some((c) => c.status === 'running')) status = 'running';
+    else if (cells.some((c) => c.status === 'waiting') || run.pilot?.status === 'waiting') status = 'waiting_for_human';
+    else if (this.isFinished()) status = 'done';
     if (status !== run.status) {
       run.status = status;
-      if (status === 'done') run.finishedAt = new Date().toISOString();
+      if (status === 'done') run.finishedAt = now();
       this.changed({ type: 'run.status', status });
     }
   }
