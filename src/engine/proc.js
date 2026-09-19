@@ -27,7 +27,7 @@ export function runProcess({ argv, shellCmd, cwd, env, timeout, logPath, masker,
     try {
       child = spawn(cmd, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) { log.end(); return reject(e); }
-    child.on('error', (e) => { log.end(); resolve({ code: 127, signal: null, timedOut: false, tail: String(e.message), pid: child.pid }); });
+    child.on('error', (e) => { log.end(() => resolve({ code: 127, signal: null, timedOut: false, tail: String(e.message), pid: child.pid })); });
     onSpawn?.(child.pid);
     let tail = '';
     let written = 0;
