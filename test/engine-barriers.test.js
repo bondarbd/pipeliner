@@ -52,6 +52,10 @@ test('human step waits, answer continues or pauses, notes are written', async ()
   assert.equal(run.cells.b.ask.status, 'paused');
   assert.match(fs.readFileSync(paths(run, 'a').notes, 'utf8'), /Q: go a\?\nA: Да/);
   assert.throws(() => engine.answer('a', 'ask', { answer: 'x' }), /not waiting/);
+  const typo = mkEngine({ items: [{ name: 'a' }], steps: [{ name: 'ask', each: true, human: { question: 'q', options: ['Отправил', 'Завтра'] } }] });
+  typo.engine.start(); await typo.engine.idle();
+  assert.throws(() => typo.engine.answer('a', 'ask', { answer: 'Отправлено' }), /answer must be one of: Отправил \| Завтра/);
+  assert.equal(typo.run.cells.a.ask.status, 'waiting');
 });
 
 test('needInput round trip: runner asks a follow-up question, answer resumes the same step', async () => {
@@ -103,7 +107,7 @@ test('a long human wait is credited back to the budget clock, so parallel cells 
 
 test('outbound accepts a custom list of confirming answers', async () => {
   const { engine, run } = mkEngine({ items: [{ name: 'a' }],
-    steps: [{ name: 'ask', each: true, human: { question: 'q', pause_on: [] } }, { name: 'send', each: true, shell: 'x', outbound: ['Отправил'] }] });
+    steps: [{ name: 'ask', each: true, human: { question: 'q', options: ['Отправил', 'Нет'], pause_on: [] } }, { name: 'send', each: true, shell: 'x', outbound: ['Отправил'] }] });
   engine.start(); await engine.idle();
   engine.answer('a', 'ask', { answer: 'Отправил' }); await engine.idle();
   assert.equal(run.cells.a.send.status, 'success');

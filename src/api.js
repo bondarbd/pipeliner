@@ -71,7 +71,7 @@ export function createApp(opts) {
     const runs = manager.list().filter((s) => !['done', 'aborted'].includes(s.status)).map((s) => manager.get(s.id)).filter(Boolean);
     res.json(boardRows({ runs, items: queue.list(manager.home), all: req.query.all === '1' }));
   });
-  app.get('/api/queues', (req, res) => res.json(queue.list(manager.home)));
+  app.get('/api/queues', (req, res) => res.json(queue.list(manager.home).filter((it) => req.query.all === '1' || ['open', 'snoozed'].includes(it.status))));
   app.post('/api/queues/:name', (req, res) => {
     try { res.status(201).json(queue.add(manager.home, req.params.name, { text: req.body.text, link: req.body.link })); }
     catch (e) { res.status(400).json({ error: e.message }); }

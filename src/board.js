@@ -25,8 +25,10 @@ export function boardRows({ runs = [], items = [], all = false, today = localDat
       }
     }
   }
+  const liveRuns = new Set(runs.map((r) => r.id));
   for (const it of items) {
     if (!['open', 'snoozed'].includes(it.status)) continue;
+    if (it.runId && liveRuns.has(it.runId)) continue;   // already on the board as that run's cell
     const overdue = it.status === 'snoozed' && isOpen(it, today);
     if (!all && !overdue) continue;
     push({ kind: 'queue', group: it.queue, item: it.id, step: null, state: overdue ? 'overdue' : it.status,

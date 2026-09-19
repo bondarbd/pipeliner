@@ -15,10 +15,10 @@ test('add / list / open / done / drop', () => {
   assert.equal(a.text, 'Петя: где дистрибутив?'); assert.equal(a.status, 'open'); assert.equal(b.link, null);
   assert.equal(fs.statSync(path.join(h, 'inbox', 'debts', `${a.id}.json`)).mode & 0o777, 0o600);
   assert.deepEqual(queue.queues(h), ['debts']);
-  assert.deepEqual(queue.open(h, 'debts').map((i) => i.id), [a.id, b.id]);
+  assert.deepEqual(queue.open(h, 'debts').map((i) => i.id).sort(), [a.id, b.id].sort());   // same-second ids: order is not defined
   queue.done(h, 'debts', a.id); queue.drop(h, 'debts', b.id, 'nah');
   assert.deepEqual(queue.open(h, 'debts'), []);
-  assert.deepEqual(queue.list(h).map((i) => [i.status, i.note]), [['done', null], ['dropped', 'nah']]);
+  assert.deepEqual(queue.list(h).map((i) => [i.status, i.note]).sort(), [['done', null], ['dropped', 'nah']]);
   assert.throws(() => queue.add(h, 'debts', { text: '   ' }), /empty text/);
   assert.throws(() => queue.add(h, '../x', { text: 'y' }), /invalid queue name/);
   assert.throws(() => queue.done(h, 'debts', 'nope'), /no item/);
@@ -64,4 +64,7 @@ test('board: waiting cells and overdue snoozes come first; --all adds running an
   assert.equal(now[0].link, 'l1');
   const all = boardRows({ runs: [run], items, all: true, today: '2026-09-20' });
   assert.deepEqual(all.map((r) => [r.item, r.state]), [['q1', 'overdue'], ['a', 'paused'], ['q2', 'open'], ['b', 'running']]);
+  // an item held by a live run is shown once, as that run's cell
+  const held = boardRows({ runs: [run], items: [{ ...items[1], runId: 'r1' }], all: true, today: '2026-09-20' });
+  assert.ok(!held.some((r) => r.kind === 'queue'));
 });

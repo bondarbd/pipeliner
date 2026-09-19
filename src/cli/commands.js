@@ -298,7 +298,11 @@ export async function board(args, io) {
     const runs = store.listRuns(io.home).filter((s) => !['done', 'aborted'].includes(s.status)).map((s) => store.loadRun(io.home, s.id));
     rows = boardRows({ runs, items: queue.list(io.home), all });
   }
-  if (!rows.length) { io.out(all ? 'nothing alive' : 'nothing needs you now (try --all)'); return 0; }
+  if (!rows.length) {
+    const open = queue.list(io.home).filter((it) => ['open', 'snoozed'].includes(it.status)).length;
+    io.out(all ? 'nothing alive' : `nothing needs you now${open ? ` (${open} queued item(s) wait for their morning run — see --all or \`runboard queue\`)` : ''}`);
+    return 0;
+  }
   io.out(table(rows.map((r) => [r.group, r.item, r.step || '', r.state, r.age, r.info.slice(0, 90), r.link || '', r.runId || '']), ['group', 'item', 'step', 'state', 'age', 'info', 'link', 'run']));
   return 0;
 }

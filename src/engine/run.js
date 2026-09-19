@@ -386,6 +386,8 @@ export class Engine extends EventEmitter {
     if (itemName === '__pilot__') return this.answerPilot(answer);
     const c = store.itemCell(this.run, itemName, stepName);
     if (c.status !== 'waiting') throw new Error(`cell ${itemName ?? '*'}:${stepName} is not waiting`);
+    const options = c.waiting.options || [];
+    if (!c.needInput && options.length && !options.includes(answer)) throw new Error(`answer must be one of: ${options.join(' | ')}`);
     const extra = Object.keys(fields).length ? `\n${JSON.stringify(fields)}` : '';
     store.appendNotes(this.run, itemName, `Q: ${c.waiting.question}\nA: ${answer}${extra}`, 'human');
     const step = this.step(stepName); const item = itemName ? this.item(itemName) : null;
