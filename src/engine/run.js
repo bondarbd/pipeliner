@@ -189,11 +189,87 @@ export class Engine extends EventEmitter {
   async runCheck() { return false; }
   async runVerify() { return true; }
 
-  // Task 11 replaces this with the ladder; part 1: always pause.
-  async applyLadder(item, step, c) {
-    c.status = 'paused';
-    this.changed({ type: 'cell.paused', item: item?.name, step: step.name, error: c.error });
+  async applyLadder(item, step, c, r) {
+    const rungs = step.on_fail || [{ do: 'pause' }];
+    const pause = () => { c.status = 'paused'; this.changed({ type: 'cell.paused', item: item?.name, step: step.name, error: c.error }); };
+    while (c.rung < rungs.length) {
+      const rung = rungs[c.rung];
+      if (rung.do === 'retry') {
+        if (c.retriesUsed < rung.times) {
+          c.retriesUsed++; c.status = 'pending';
+          const delayMs = (rung.delay || 0) * 1000;
+          this.changed({ type: 'cell.retry_scheduled', item: item?.name, step: step.name, delayMs });
+          if (delayMs) {
+            c.retryAt = Date.now() + delayMs;
+            const t = setTimeout(() => { this.timers.delete(t); c.retryAt = null; this.scheduleTick(); }, delayMs);
+            this.timers.add(t);
+          }
+          return;
+        }
+        c.rung++; continue;
+      }
+      if (rung.do === 'agent') {
+        if (!c.diagnosed) {
+          c.diagnosed = true; c.note = 'diagnosing';
+          this.changed({ type: 'cell.diagnose', item: item?.name, step: step.name });
+          const diag = { name: `${step.name}#diagnose`, agent: { prompt: rung.prompt, readonly: true }, output: 'text' };
+          try { await this.runners.agent.run(diag, { ...r, logPath: r.logPath.replace(/\.log$/, '.diagnose.log') }); }
+          catch (e) { store.addEvent(this.run, { type: 'cell.diagnose_failed', item: item?.name, step: step.name, error: e.message }); }
+          c.note = null;
+        }
+        if (rung.then === 'pause') { pause(); return; }
+        c.rung++; continue;
+      }
+      if (rung.do === 'pause') { pause(); return; }
+      if (rung.do === 'skip_item') {
+        c.status = 'skipped'; if (item) item.status = 'skipped';
+        this.changed({ type: 'item.skipped', item: item?.name, step: step.name, error: c.error });
+        return;
+      }
+      if (rung.do === 'abort') { c.status = 'failed'; await this.abort(`step ${step.name} failed on ${item ? item.name : 'run'}: ${c.error}`); return; }
+      c.rung++;
+    }
+    pause();
   }
+
+  // ---- user actions
+  retry(itemName, stepName) {
+    const c = store.itemCell(this.run, itemName, stepName);
+    if (!['paused', 'interrupted', 'unverified', 'failed', 'skipped'].includes(c.status)) throw new Error(`cannot retry cell in status ${c.status}`);
+    if (c.noRetry) throw new Error(`retry blocked: ${c.error}`);
+    c.status = 'pending'; c.error = null; c.retryAt = null;
+    if (itemName) { const it = this.item(itemName); if (it.status !== 'active') it.status = 'active'; }
+    if (this.run.status === 'done') this.run.status = 'running';
+    this.changed({ type: 'cell.retry', item: itemName, step: stepName, by: 'user' });
+    this.scheduleTick();
+  }
+  skipCell(itemName, stepName) {
+    const c = store.itemCell(this.run, itemName, stepName);
+    if (!['paused', 'interrupted', 'unverified', 'failed', 'pending', 'waiting'].includes(c.status)) throw new Error(`cannot skip cell in status ${c.status}`);
+    c.status = 'skipped'; c.waiting = null;
+    this.changed({ type: 'cell.skip', item: itemName, step: stepName, by: 'user' });
+    this.scheduleTick();
+  }
+  async killCell(c) { if (c.pid) { await killGroup(c.pid); c.pid = null; } }
+  abortItem(itemName) {
+    const it = this.item(itemName);
+    it.status = 'aborted';
+    for (const s of this.steps) if (s.each) {
+      const c = this.cell(it, s);
+      if (!DONE.has(c.status)) { if (c.status === 'running') this.killCell(c); c.status = 'failed'; c.waiting = null; }
+    }
+    this.changed({ type: 'item.aborted', item: itemName, by: 'user' });
+    this.scheduleTick();
+  }
+  async abort(reason) {
+    this.run.status = 'aborted'; this.run.note = reason;
+    for (const a of this.active.values()) if (a.pid) await killGroup(a.pid);
+    for (const t of this.timers) clearTimeout(t);
+    this.timers.clear();
+    this.changed({ type: 'run.aborted', reason });
+  }
+  pauseRun() { this.run.pausedByUser = true; this.changed({ type: 'run.pause', by: 'user' }); }
+  resumeRun() { this.run.pausedByUser = false; this.run.note = null; this.changed({ type: 'run.resume', by: 'user' }); this.scheduleTick(); }
 
   finishSuccess(item, step, c, output, how) {
     c.status = 'success'; c.output = output; c.finishedAt = new Date().toISOString(); c.waiting = null;
