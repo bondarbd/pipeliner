@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "runboard template",
+  "type": "object",
+  "required": ["name", "steps"],
+  "properties": {
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "params": { "type": "object", "additionalProperties": { "type": "object", "properties": {
+      "type": { "enum": ["string", "number", "boolean"] }, "required": { "type": "boolean" }, "label": { "type": "string" }, "default": {} } } },
+    "items": { "type": "object", "properties": { "source": { "enum": ["dirs", "manual"] }, "default": { "type": "array" } } },
+    "modes": { "type": "array", "items": { "enum": ["all", "pilot"] } },
+    "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } }
+  },
+  "$defs": {
+    "step": { "type": "object", "required": ["name"], "properties": {
+      "name": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+      "each": { "const": true }, "once": { "const": true },
+      "barrier": { "enum": ["all", "succeeded"] },
+      "shell": { "type": "string" }, "js": { "type": "string" },
+      "agent": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string" }, "input": {}, "readonly": { "type": "boolean" }, "timeout": { "type": "integer" } } },
+      "human": { "type": "object", "required": ["question"], "properties": { "question": { "type": "string" }, "options": { "type": "array" }, "fields": { "type": "array" }, "pause_on": { "type": "array" } } },
+      "output": { "enum": ["keys", "json", "text"] },
+      "items": { "type": "string" }, "when": { "type": "string" }, "check": { "type": "string" }, "verify": { "type": "string" },
+      "retriable": { "type": "boolean" }, "raw": { "type": "boolean" },
+      "on_fail": { "type": "array", "items": { "type": "object", "required": ["do"], "properties": {
+        "do": { "enum": ["retry", "agent", "pause", "skip_item", "abort"] }, "times": { "type": "integer" }, "delay": { "type": "number" },
+        "prompt": { "type": "string" }, "then": { "const": "pause" } } } },
+      "timeout": { "type": "integer" }, "env": { "type": "array", "items": { "type": "string" } },
+      "cwd": { "type": "string" }, "resource": { "type": "string" }, "parallel": { "type": "integer" }
+    } }
+  }
+}
