@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ru" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>runboard</title>
+<link rel="stylesheet" href="vendor/pico.min.css">
+<style>
+  :root { --pico-font-size: 15px; }
+  main { max-width: 1400px; }
+  table.grid td, table.grid th { padding: .3rem .5rem; white-space: nowrap; }
+  .cell { cursor: pointer; border-radius: 4px; padding: .1rem .4rem; display: inline-block; min-width: 6rem; text-align: center; }
+  .st-pending { background: #eee; } .st-running { background: #cce5ff; } .st-waiting { background: #fff3cd; }
+  .st-success { background: #d4edda; } .st-paused, .st-unverified { background: #f8d7da; } .st-failed { background: #dc3545; color: #fff; }
+  .st-skipped, .st-n\/a { background: #e2e3e5; color: #666; } .st-interrupted { background: #ffe5b4; }
+  pre.log { max-height: 50vh; overflow: auto; font-size: 12px; background: #111; color: #ddd; padding: .5rem; }
+  .banner { border-left: 4px solid #ffc107; padding: .5rem 1rem; margin: 1rem 0; background: #fff8e1; }
+  .drawer { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; margin-top: 1rem; }
+  textarea.notes { min-height: 12rem; font-family: monospace; font-size: 12px; }
+  nav a.active { font-weight: bold; }
+</style>
+</head>
+<body>
+<main class="container" id="app">
+  <nav>
+    <ul><li><strong>runboard</strong></li></ul>
+    <ul>
+      <li><a href="#/" :class="{active: view==='templates'}">Шаблоны</a></li>
+      <li><a href="#/runs" :class="{active: view==='runs'}">Запуски</a></li>
+    </ul>
+  </nav>
+  <p v-if="error" style="color:#b00">{{ error }}</p>
+
+  <section v-if="view==='templates'">
+    <div class="grid">
+      <article v-for="t in templates" :key="t.name" @click="pick(t)" style="cursor:pointer" :style="sel && sel.name===t.name ? 'outline:2px solid #06c' : ''">
+        <header><strong>{{ t.title || t.name }}</strong> <small v-if="!t.trusted">(не подтверждён)</small></header>
+        <p>{{ t.description }}</p>
+      </article>
+    </div>
+    <p v-if="templateErrors.length" style="color:#b00"><b>Ошибки шаблонов:</b><br><span v-for="e in templateErrors">{{ e.file }}: {{ e.errors.map(x => x.path + ' ' + x.message).join('; ') }}<br></span></p>
+    <article v-if="sel">
+      <header><strong>Запуск: {{ sel.title || sel.name }}</strong></header>
+      <div class="grid">
+        <label v-for="(p, k) in sel.params" :key="k">{{ p.label || k }}<span v-if="p.required"> *</span>
+          <input v-model="form.params[k]" :placeholder="p.default || ''"></label>
+      </div>
+      <fieldset v-if="(sel.items.source||'manual')==='dirs'">
+        <legend>Проекты ({{ form.items.length }} выбрано)</legend>
+        <label v-for="p in projects" :key="p" style="display:inline-block;margin-right:1rem"><input type="checkbox" :value="p" v-model="form.items"> {{ p }}</label>
+      </fieldset>
+      <label v-else>Элементы (JSON-массив объектов с полем name; пусто = из шаблона)
+        <textarea v-model="form.itemsJson" rows="4" placeholder='[{"name":"p1"},{"name":"p2","lib":"log4j"}]'></textarea></label>
+      <label>Режим <select v-model="form.mode"><option v-for="m in sel.modes" :value="m">{{ m==='pilot' ? 'пилот → подтверждение → остальные' : 'все параллельно' }}</option></select></label>
+      <div v-if="trust" class="banner"><b>Шаблон изменился или запускается впервые.</b> Команды:
+        <pre>{{ trust.commands.join('\n') }}</pre><button @click="doTrust">Подтвердить и запустить</button></div>
+      <button @click="launch" :disabled="busy">Запустить</button>
+    </article>
+  </section>
+
+  <section v-if="view==='runs'">
+    <table class="grid"><thead><tr><th>id</th><th>шаблон</th><th>статус</th><th>режим</th><th>элементов</th><th>создан</th></tr></thead>
+      <tbody><tr v-for="r in runs" :key="r.id"><td><a :href="'#/run/'+r.id">{{ r.id }}</a></td><td>{{ r.templateName }}</td><td><span :class="'cell st-'+r.status">{{ r.status }}</span></td><td>{{ r.mode }}</td><td>{{ r.items }}</td><td>{{ r.createdAt.replace('T',' ').slice(0,19) }}</td></tr></tbody></table>
+  </section>
+
+  <section v-if="view==='run' && run">
+    <hgroup><h3>{{ run.templateName }} <small>{{ run.id }}</small> <span :class="'cell st-'+run.status">{{ run.status }}</span></h3>
+      <p>params: {{ JSON.stringify(run.params) }} <span v-if="run.note"> · <b>{{ run.note }}</b></span></p></hgroup>
+    <p>
+      <button class="secondary outline" @click="act('pause')" v-if="!run.pausedByUser">Пауза</button>
+      <button class="secondary outline" @click="act('resume')" v-else>Продолжить</button>
+      <button class="contrast outline" @click="confirmAbort">Прервать запуск</button>
+    </p>
+    <div v-if="run.pilot && run.pilot.status==='waiting'" class="banner"><b>Пилот {{ run.pilot.item }} прошёл.</b> Продолжать на остальных?
+      <button @click="answer('__pilot__', null, 'Да')">Да</button> <button class="secondary" @click="answer('__pilot__', null, 'Нет')">Нет</button></div>
+    <div v-for="w in waitingCells" :key="w.key" class="banner"><b>{{ w.item || '*' }} / {{ w.step }}:</b> {{ w.waiting.question }}
+      <span v-for="f in w.waiting.fields" :key="f"> <input :placeholder="f" v-model="w.fields[f]" style="width:12rem;display:inline"></span>
+      <span v-if="w.waiting.options.length"><button v-for="o in w.waiting.options" :key="o" @click="answer(w.item, w.step, o, w.fields)">{{ o }}</button></span>
+      <span v-else><input v-model="w.fields.answer" placeholder="ответ" style="width:20rem;display:inline"> <button @click="answer(w.item, w.step, w.fields.answer, w.fields)">Отправить</button></span></div>
+
+    <table class="grid"><thead><tr><th>элемент</th><th v-for="s in run.steps" :key="s.name">{{ s.name }}<br><small>{{ s.once ? 'once' + (s.barrier ? ' · ' + s.barrier : '') : 'each' }}</small></th><th></th></tr></thead>
+      <tbody>
+        <tr v-for="it in run.items" :key="it.name"><td><b>{{ it.name }}</b> <small v-if="it.status!=='active'">({{ it.status }})</small></td>
+          <td v-for="s in run.steps" :key="s.name">
+            <span v-if="s.each && run.cells[it.name] && run.cells[it.name][s.name]" :class="'cell st-'+run.cells[it.name][s.name].status" @click="open(it.name, s.name)" :title="run.cells[it.name][s.name].error||''">{{ run.cells[it.name][s.name].status }}<small v-if="run.cells[it.name][s.name].attempts>1"> ×{{ run.cells[it.name][s.name].attempts }}</small></span>
+            <span v-else-if="s.once" style="color:#aaa">·</span></td>
+          <td><button class="outline secondary" style="padding:.1rem .5rem" @click="openCtx(it.name)">контекст</button> <button class="outline contrast" style="padding:.1rem .5rem" @click="abortItem(it.name)" v-if="it.status==='active'">исключить</button></td></tr>
+        <tr><td><i>once</i></td><td v-for="s in run.steps" :key="s.name"><span v-if="s.once" :class="'cell st-'+run.once[s.name].status" @click="open(null, s.name)">{{ run.once[s.name].status }}</span></td><td><button class="outline secondary" style="padding:.1rem .5rem" @click="openCtx(null)">контекст</button></td></tr>
+      </tbody></table>
+
+    <div v-if="drawer" class="drawer">
+      <header><b>{{ drawer.item || '*' }} / {{ drawer.step }}</b> — {{ cellOf(drawer).status }}
+        <span v-if="cellOf(drawer).error"> · {{ cellOf(drawer).error }}</span>
+        <span style="float:right"><button @click="cellAct('retry')" :disabled="!canRetry(cellOf(drawer))">Retry</button> <button class="secondary" @click="cellAct('skip')">Skip</button> <button class="outline" @click="drawer=null">×</button></span></header>
+      <p v-if="drawer.kind==='cell'"><small>попыток: {{ cellOf(drawer).attempts }} · ступень on_fail: {{ cellOf(drawer).rung }} · seq: {{ cellOf(drawer).seq }}</small><br>
+        <code v-if="cellOf(drawer).command">{{ cellOf(drawer).command }}</code></p>
+      <p><a href="#" @click.prevent="loadLog('log')">log</a> · <a href="#" @click.prevent="loadLog('check')">check</a> · <a href="#" @click.prevent="loadLog('verify')">verify</a> · <a href="#" @click.prevent="loadLog('diagnose')">diagnose</a> · <a href="#" @click.prevent="loadLog('diff')">diff</a> · <a href="#" @click.prevent="loadRender()">rendered</a></p>
+      <pre class="log">{{ logText }}</pre>
+    </div>
+
+    <div v-if="ctx" class="drawer">
+      <header><b>Контекст {{ ctx.item || 'запуска' }}</b> <span style="float:right"><button @click="saveNotes">Сохранить notes.md</button> <button class="outline" @click="ctx=null">×</button></span></header>
+      <textarea class="notes" v-model="ctx.notes"></textarea>
+      <details><summary>Результаты шагов</summary><pre>{{ JSON.stringify(ctx.steps, null, 2) }}</pre></details>
+    </div>
+  </section>
+</main>
+<script src="vendor/vue.global.prod.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
