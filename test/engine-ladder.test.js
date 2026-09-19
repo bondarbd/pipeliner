@@ -56,7 +56,19 @@ test('user actions: retry paused cell, skip cell, abort item, pause/resume run',
   assert.equal(run.cells.b.s.status, 'skipped');
   assert.equal(run.cells.b.t.status, 'success');
   assert.equal(run.status, 'done');
-  assert.throws(() => engine.retry('a', 't'), /cannot retry/);
+  assert.throws(() => engine.retry('a', 't'), /run is done/);
+});
+
+test('retry/skipCell/answer refuse once the run reaches a terminal status', async () => {
+  const { engine, run } = mkEngine({ items: [{ name: 'a' }],
+    steps: [{ name: 's', each: true, shell: 'x' }], plan: { 'a:s': fail } });
+  engine.start(); await engine.idle();
+  assert.equal(run.cells.a.s.status, 'paused');
+  await engine.abort('operator abort');
+  assert.equal(run.status, 'aborted');
+  assert.throws(() => engine.retry('a', 's'), /run is aborted/);
+  assert.throws(() => engine.skipCell('a', 's'), /run is aborted/);
+  assert.throws(() => engine.answer('a', 's', { answer: 'x' }), /run is aborted/);
 });
 
 test('pauseRun stops new cells, resumeRun continues; abortItem marks lane failed', async () => {
@@ -72,10 +84,15 @@ test('pauseRun stops new cells, resumeRun continues; abortItem marks lane failed
   assert.equal(run.status, 'done');
 });
 
-test('max_attempts budget pauses the cell even when the user keeps retrying', async () => {
-  const { engine, run } = mkEngine({ items: [{ name: 'a' }], steps: [{ name: 's', each: true, shell: 'x' }], plan: { 'a:s': fail }, config: { limits: { max_attempts: 2 } } });
+test('max_attempts budget pauses automatic retries, but a user retry grants a fresh allowance', async () => {
+  const { engine, run } = mkEngine({ items: [{ name: 'a' }],
+    steps: [{ name: 's', each: true, shell: 'x', retriable: true, on_fail: [{ do: 'retry', times: 5, delay: 0 }, { do: 'pause' }] }],
+    plan: { 'a:s': fail }, config: { limits: { max_attempts: 1 } } });
   engine.start(); await engine.idle();
-  engine.retry('a', 's'); await engine.idle();
+  assert.equal(run.cells.a.s.attempts, 1);
+  assert.match(run.cells.a.s.error, /budget: max_attempts/);
+  // per-cell retry allowance: a user-triggered retry lets the cell run again instead of
+  // re-pausing on the budget immediately.
   engine.retry('a', 's'); await engine.idle();
   assert.equal(run.cells.a.s.attempts, 2);
   assert.match(run.cells.a.s.error, /budget: max_attempts/);

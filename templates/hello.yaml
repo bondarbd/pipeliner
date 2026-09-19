@@ -21,7 +21,7 @@ steps:
 
   - name: flaky
     each: true
-    shell: bash ${{ run.templateDir }}/hello/flaky.sh ${{ item.name }} $OUT
+    shell: bash "${{ run.templateDir }}/hello/flaky.sh" "${{ item.name }}" "$OUT"
     output: keys
     retriable: true
     on_fail:

@@ -5,7 +5,7 @@ import { buildCtx } from './context.js';
 import { render } from '../expr.js';
 import { createMasker } from '../secrets.js';
 import * as locks from './locks.js';
-import { killGroup, isAlive } from './proc.js';
+import { killGroup } from './proc.js';
 import { bodyKind } from '../template/validate.js';
 
 export const DONE = new Set(['success', 'skipped', 'n/a']);
@@ -205,7 +205,7 @@ export class Engine extends EventEmitter {
       this.changed({ type: 'cell.skipped', item: item?.name, step: step.name });
       return;
     }
-    if (c.attempts >= this.config.limits.max_attempts) {
+    if (c.attempts >= (c.attemptsLimit ?? this.config.limits.max_attempts)) {
       c.status = 'paused'; c.error = `budget: max_attempts (${this.config.limits.max_attempts})`; c.finishedAt = new Date().toISOString();
       this.changed({ type: 'cell.budget', item: item?.name, step: step.name });
       return;
@@ -225,7 +225,7 @@ export class Engine extends EventEmitter {
       if (res.command) c.command = this.masker.mask(res.command);
       c.pid = null;
       if (res.waiting) { c.status = 'waiting'; c.waiting = res.waiting; c.needInput = false; this.changed({ type: 'cell.waiting', item: item?.name, step: step.name }); return; }
-      if (res.needInput) { c.status = 'waiting'; c.waiting = { question: res.needInput, options: [], fields: ['answer'] }; c.needInput = true; this.changed({ type: 'cell.need_input', item: item?.name, step: step.name }); return; }
+      if (res.needInput) { c.status = 'waiting'; c.waiting = { question: res.needInput, options: [], fields: [] }; c.needInput = true; this.changed({ type: 'cell.need_input', item: item?.name, step: step.name }); return; }
       if (!res.ok) {
         c.error = res.error || 'failed';
         if (res.dirtyAfterKill) {
@@ -279,8 +279,7 @@ export class Engine extends EventEmitter {
   async recover() {
     for (const [itemName, step, c] of this.allCells()) {
       if (c.status === 'running') {
-        if (c.pid && isAlive(c.pid)) await killGroup(c.pid);
-        c.status = 'interrupted'; c.error = 'panel restarted during this step'; c.pid = null;
+        c.status = 'interrupted'; c.error = 'panel restarted during this step'; c.orphanPid = c.pid; c.pid = null;
       }
       if (c.status === 'pending' && c.retryAt) c.retryAt = null;
       if (c.status === 'waiting' && !c.needInput && !step.human) { c.status = 'interrupted'; c.error = 'panel restarted while waiting'; }
@@ -352,9 +351,11 @@ export class Engine extends EventEmitter {
 
   // ---- user actions
   retry(itemName, stepName) {
+    if (TERMINAL_RUN.has(this.run.status)) throw new Error(`run is ${this.run.status}`);
     const c = store.itemCell(this.run, itemName, stepName);
     if (!['paused', 'interrupted', 'unverified', 'failed', 'skipped'].includes(c.status)) throw new Error(`cannot retry cell in status ${c.status}`);
     if (c.noRetry) throw new Error(`retry blocked: ${c.error}`);
+    c.attemptsLimit = c.attempts + this.config.limits.max_attempts;
     c.status = 'pending'; c.error = null; c.retryAt = null;
     if (itemName) { const it = this.item(itemName); if (it.status !== 'active') it.status = 'active'; }
     if (this.run.status === 'done') this.run.status = 'running';
@@ -362,6 +363,7 @@ export class Engine extends EventEmitter {
     this.scheduleTick();
   }
   skipCell(itemName, stepName) {
+    if (TERMINAL_RUN.has(this.run.status)) throw new Error(`run is ${this.run.status}`);
     const c = store.itemCell(this.run, itemName, stepName);
     if (!['paused', 'interrupted', 'unverified', 'failed', 'pending', 'waiting'].includes(c.status)) throw new Error(`cannot skip cell in status ${c.status}`);
     c.status = 'skipped'; c.waiting = null; c.finishedAt = new Date().toISOString();
@@ -440,6 +442,7 @@ export class Engine extends EventEmitter {
   }
 
   answer(itemName, stepName, { answer, fields = {} } = {}) {
+    if (TERMINAL_RUN.has(this.run.status)) throw new Error(`run is ${this.run.status}`);
     if (itemName === '__pilot__') {
       const p = this.run.pilot;
       if (!p || p.status !== 'waiting') throw new Error('pilot is not waiting');

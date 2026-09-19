@@ -26,8 +26,13 @@ export function validateTemplate(tpl) {
   if (!/^[a-z][a-z0-9-]*$/.test(tpl.name || '')) err('name', 'name must match ^[a-z][a-z0-9-]*$');
   if (tpl.items?.source && !['dirs', 'manual'].includes(tpl.items.source)) err('items.source', 'must be dirs or manual');
   for (const m of tpl.modes || []) if (!['all', 'pilot'].includes(m)) err('modes', `unknown mode ${m}`);
-  for (const [k, p] of Object.entries(tpl.params || {}))
+  for (const [k, p] of Object.entries(tpl.params || {})) {
     if (p?.type && !['string', 'number', 'boolean'].includes(p.type)) err(`params.${k}.type`, 'must be string|number|boolean');
+    if (p?.pattern !== undefined) {
+      if (typeof p.pattern !== 'string') err(`params.${k}.pattern`, 'must be a string');
+      else { try { new RegExp(p.pattern); } catch { err(`params.${k}.pattern`, 'must be a valid regular expression'); } }
+    }
+  }
   if (!Array.isArray(tpl.steps) || !tpl.steps.length) { err('steps', 'at least one step required'); return errs; }
 
   const seen = new Set();

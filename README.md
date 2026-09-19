@@ -224,6 +224,11 @@ stdout — только ответ агента (а не вперемешку с
 `CONFLUENCE_SPACE`, `CONFLUENCE_RELEASE_TITLE`, в
 `~/IdeaProjects/work-skills/release/config.example.env`.
 
+Шаг `build` в `templates/release.yaml` вызывает `jenkins.py run-one` с явным `--max-retries 0`
+(ретраи владеет только лестница runboard, `on_fail: retry times 1`) и передаёт в шаг
+`RUN_ONE_MAX_WAIT` (ожидание сборки в jenkins.py, по умолчанию 5400с) при `timeout: 6600` самого
+шага runboard — таймаут шага должен оставаться больше `RUN_ONE_MAX_WAIT`.
+
 ## Безопасность
 
 - Сервер слушает только `127.0.0.1`; токен в `~/.runboard/token` (0600) передаётся UI один

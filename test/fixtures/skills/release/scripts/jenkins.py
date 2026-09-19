@@ -2,7 +2,7 @@
 """Mock of work-skills jenkins.py run-one. Project 'flaky' fails when MOCK_FAIL_ONCE marker is absent."""
 import argparse, os, sys
 ap = argparse.ArgumentParser(); sp = ap.add_subparsers(dest="cmd")
-p = sp.add_parser("run-one"); p.add_argument("--project", required=True); p.add_argument("--branch", required=True); p.add_argument("--commit"); p.add_argument("--out", required=True)
+p = sp.add_parser("run-one"); p.add_argument("--project", required=True); p.add_argument("--branch", required=True); p.add_argument("--commit"); p.add_argument("--out", required=True); p.add_argument("--max-retries", type=int)
 a = ap.parse_args()
 if a.cmd != "run-one": sys.exit(f"unexpected {a.cmd}")
 if os.environ.get("JENKINS_TOKEN") != "tok": sys.exit("no JENKINS_TOKEN in env")

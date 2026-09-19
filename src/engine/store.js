@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 export function runsDir(home) { return path.join(home, 'runs'); }
-const safe = (s) => String(s).replace(/[^A-Za-z0-9._-]/g, '_');
+export const safe = (s) => String(s).replace(/[^A-Za-z0-9._-]/g, '_');
 export const VALID_ID = /^[A-Za-z0-9._-]+$/;
 
 export function newRunId() {

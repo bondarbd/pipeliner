@@ -16,6 +16,9 @@ test('init, doctor, validate, render, dry-run and a real hello run', () => {
   const env = { RUNBOARD_HOME: home };
   let r = sh(['init'], env);
   assert.equal(r.code, 0); assert.ok(fs.existsSync(path.join(home, 'config.yaml')));
+  // Never let doctor read the real ~/.config/release/env or call out to Jenkins: point
+  // env_file at /dev/null and projects_root at a scratch dir before running doctor.
+  fs.writeFileSync(path.join(home, 'config.yaml'), `env_file: /dev/null\nprojects_root: ${home}\n`);
   r = sh(['doctor'], env);
   assert.match(r.out, /node .*✓/); assert.match(r.out, /gigacode|agent command/);
   r = sh(['validate', 'templates/hello.yaml'], env);

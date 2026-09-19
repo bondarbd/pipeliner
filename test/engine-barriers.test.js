@@ -61,7 +61,8 @@ test('needInput round trip: runner asks a follow-up question, answer resumes the
   engine.start(); await engine.idle();
   assert.equal(run.cells.a.s.status, 'waiting');
   assert.equal(run.cells.a.s.needInput, true);
-  assert.deepEqual(run.cells.a.s.waiting.fields, ['answer']);
+  // fields: [] so the UI falls back to its free-text input (options is also empty)
+  assert.deepEqual(run.cells.a.s.waiting.fields, []);
   engine.answer('a', 's', { answer: '2' });
   await engine.idle();
   assert.equal(run.cells.a.s.status, 'success');

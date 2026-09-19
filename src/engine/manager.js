@@ -57,6 +57,7 @@ export class Manager {
       const v = params[k];
       if (p.required && (v === undefined || v === '')) errs.push({ path: `params.${k}`, message: 'required' });
       if (v !== undefined && p.type === 'number' && Number.isNaN(Number(v))) errs.push({ path: `params.${k}`, message: 'must be a number' });
+      if (v !== undefined && v !== '' && p.pattern && !new RegExp(p.pattern).test(String(v))) errs.push({ path: `params.${k}`, message: `must match ${p.pattern}` });
     }
     return errs;
   }

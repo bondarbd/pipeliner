@@ -34,6 +34,23 @@ test('templates load, params are checked, trust is required once, run executes',
   await assert.rejects(m.create({ templateName: 'demo', params: { n: '1' }, items: ['nope'] }), /not found/);
 });
 
+test('params.<k>.pattern: a value that fails it is rejected before trust/run, matching message', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-mgr-pat-'));
+  const tdir = path.join(home, 'templates'); fs.mkdirSync(tdir);
+  const proj = path.join(home, 'projects'); fs.mkdirSync(path.join(proj, 'p1'), { recursive: true });
+  fs.writeFileSync(path.join(tdir, 'demo.yaml'), 'name: demo\nparams:\n  release: { type: string, required: true, pattern: "^[0-9]+$" }\nitems: { source: dirs }\nsteps:\n  - { name: s, each: true, shell: "echo hi" }\n');
+  const cfg = loadConfig(home); cfg.projects_root = proj;
+  const fake = fakeRunner({});
+  const m = new Manager({ home, config: cfg, runners: { shell: fake, js: fake, agent: fake, human }, envValues: {}, templateDirs: [tdir] });
+  await m.init();
+  assert.deepEqual(m.checkParams(m.templates.get('demo').tpl, { release: 'abc' }), [{ path: 'params.release', message: 'must match ^[0-9]+$' }]);
+  await assert.rejects(m.create({ templateName: 'demo', params: { release: 'abc' }, items: ['p1'] }), /must match/);
+  m.trust('demo', m.templates.get('demo').hash);
+  const run = await m.create({ templateName: 'demo', params: { release: '247' }, items: ['p1'] });
+  await m.engine(run.id).idle();
+  assert.equal(m.get(run.id).status, 'done');
+});
+
 test('init recovers unfinished runs from disk', async () => {
   const { m, home } = setup();
   await m.init();

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-const root = path.resolve(new URL('..', import.meta.url).pathname);
+import { fileURLToPath } from 'node:url';
+const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const files = [
   ['node_modules/vue/dist/vue.global.prod.js', 'public/vendor/vue.global.prod.js'],
   ['node_modules/@picocss/pico/css/pico.min.css', 'public/vendor/pico.min.css'],

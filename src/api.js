@@ -25,6 +25,11 @@ export function createApp(opts) {
   const app = express();
   app.disable('x-powered-by');
   app.use((req, res, next) => {
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'");
+    next();
+  });
+  app.use((req, res, next) => {
     const host = req.headers.host || '';
     if (host !== `127.0.0.1:${opts.port}`) return res.status(403).send('forbidden host');
     const origin = req.headers.origin;

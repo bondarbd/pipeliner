@@ -62,7 +62,7 @@ createApp({
     doTrust() { return this.guard(async () => { await this.api('POST', `/templates/${this.trust.template}/trust`, { hash: this.trust.hash }); this.trust = null; await this.launch(); }); },
     act(a) { return this.guard(async () => { await this.api('POST', `/runs/${this.runId}/${a}`); await this.loadRun(); }); },
     confirmAbort() { if (confirm('Прервать весь запуск и убить запущенные процессы?')) this.act('abort'); },
-    abortItem(item) { if (confirm(`Исключить ${item} из запуска?`)) this.guard(async () => { await this.api('POST', `/runs/${this.runId}/items/${item}/abort`); await this.loadRun(); }); },
+    abortItem(item) { if (confirm(`Исключить ${item} из запуска?`)) this.guard(async () => { await this.api('POST', `/runs/${this.runId}/items/${encodeURIComponent(item)}/abort`); await this.loadRun(); }); },
     ensureFields(key) { return (this.answerFields[key] ??= {}); },
     answer(item, step, answer, fields = {}) { return this.guard(async () => {
       await this.api('POST', `/runs/${this.runId}/answer`, { item: item ?? '_', step, answer, fields });
@@ -74,13 +74,13 @@ createApp({
     open(item, step) { this.drawer = { kind: 'cell', item, step }; this.loadLog('log'); },
     loadLog(kind) { return this.guard(async () => {
       const c = this.cellOf(this.drawer);
-      const res = await fetch(`/api/runs/${this.runId}/log?item=${this.drawer.item ?? '_'}&step=${this.drawer.step}&seq=${c.seq}&kind=${kind}`, { headers: { 'x-runboard-token': this.token } });
+      const res = await fetch(`/api/runs/${this.runId}/log?item=${encodeURIComponent(this.drawer.item ?? '_')}&step=${encodeURIComponent(this.drawer.step)}&seq=${c.seq}&kind=${encodeURIComponent(kind)}`, { headers: { 'x-runboard-token': this.token } });
       this.logText = res.ok ? await res.text() : `(нет ${kind} для seq ${c.seq})`;
     }); },
     loadRender() { return this.guard(async () => { const r = await this.api('POST', `/runs/${this.runId}/render`, { item: this.drawer.item ?? '_', step: this.drawer.step }); this.logText = r.command; }); },
-    cellAct(a) { return this.guard(async () => { await this.api('POST', `/runs/${this.runId}/cells/${this.drawer.item ?? '_'}/${this.drawer.step}/${a}`); await this.loadRun(); }); },
-    openCtx(item) { return this.guard(async () => { const d = await this.api('GET', `/runs/${this.runId}/context?item=${item ?? '_'}`); this.ctx = { item, ...d }; }); },
-    saveNotes() { return this.guard(async () => { await this.api('PUT', `/runs/${this.runId}/context?item=${this.ctx.item ?? '_'}`, { notes: this.ctx.notes }); }); },
+    cellAct(a) { return this.guard(async () => { await this.api('POST', `/runs/${this.runId}/cells/${encodeURIComponent(this.drawer.item ?? '_')}/${encodeURIComponent(this.drawer.step)}/${encodeURIComponent(a)}`); await this.loadRun(); }); },
+    openCtx(item) { return this.guard(async () => { const d = await this.api('GET', `/runs/${this.runId}/context?item=${encodeURIComponent(item ?? '_')}`); this.ctx = { item, ...d }; }); },
+    saveNotes() { return this.guard(async () => { await this.api('PUT', `/runs/${this.runId}/context?item=${encodeURIComponent(this.ctx.item ?? '_')}`, { notes: this.ctx.notes }); }); },
   },
   mounted() { window.addEventListener('hashchange', () => this.route()); this.route(); },
 }).mount('#app');

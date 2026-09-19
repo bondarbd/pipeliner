@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import readline from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { loadConfig, loadEnvFile, DEFAULTS } from '../config.js';
 import { readTemplate, loadTemplates } from '../template/load.js';
@@ -16,7 +17,7 @@ import { createMasker } from '../secrets.js';
 import { previewItems, previewRows, bodyText } from '../preview.js';
 import { table } from './table.js';
 
-export const PKG_ROOT = path.resolve(new URL('../..', import.meta.url).pathname);
+export const PKG_ROOT = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
 export const templateDirs = (home) => [path.join(PKG_ROOT, 'templates'), path.join(home, 'templates')];
 
 async function manager(io) {

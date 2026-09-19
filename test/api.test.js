@@ -64,13 +64,12 @@ test('templates, projects, trust flow, run lifecycle over HTTP', async () => {
   assert.equal((await api(`/runs/${id}/log?item=p1&step=s&seq=1`)).status, 404);   // fake runner writes no log
   fs.writeFileSync(paths(manager.get(id), 'p1').logPath('s', 1), 'line1\nline2\n');
   assert.equal(await (await api(`/runs/${id}/log?item=p1&step=s&seq=1`)).text(), 'line1\nline2\n');
-  // NOTE (deviation from brief): the brief's test expected 400 here, but Engine.retry
-  // (implemented in an earlier task, covered by its own passing tests) allows retrying
-  // a 'skipped' cell unconditionally, including after the run has reached 'done' — it
-  // resets run.status back to 'running' and reschedules. That is the existing, tested
-  // engine contract, so the route (matching the brief's own verbatim api.js) returns
-  // 204 here, not 400. Following the code per the brief's own tie-break rule.
-  assert.equal((await api(`/runs/${id}/cells/p1/s/retry`, { method: 'POST' })).status, 204);
+  // Engine.retry now refuses once the run has reached a terminal status ('done'/'aborted')
+  // — retry/skipCell/answer all throw `run is <status>` for TERMINAL_RUN, so the route
+  // reports it as a 400, not a success.
+  const retryAfterDone = await api(`/runs/${id}/cells/p1/s/retry`, { method: 'POST' });
+  assert.equal(retryAfterDone.status, 400);
+  assert.match((await retryAfterDone.json()).error, /run is done/);
   assert.equal((await api('/runs/nope')).status, 404);
   assert.equal((await (await api('/runs')).json())[0].id, id);
 });
@@ -82,6 +81,13 @@ test('log route rejects path traversal in seq, kind and run id', async () => {
   assert.equal((await api(`/runs/${id}/log?item=p1&step=s&seq=..%2Fx`)).status, 400);
   assert.equal((await api(`/runs/${id}/log?item=p1&step=s&seq=1&kind=..%2F..%2Fetc`)).status, 400);
   assert.equal((await api('/runs/..%2Fx')).status, 404);
+});
+
+test('security headers: X-Frame-Options and CSP are set on every response, including the UI page', async () => {
+  const res = await fetch(`${srv.url}/`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-frame-options'), 'DENY');
+  assert.equal(res.headers.get('content-security-policy'), "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'");
 });
 
 test('log bytes is clamped to a safe range; malformed JSON body yields a clean 400', async () => {

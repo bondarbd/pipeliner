@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { createApp } from './api.js';
 
 export function readToken(home) {
@@ -12,7 +13,7 @@ export function readToken(home) {
   return t;
 }
 
-export function startServer({ home, config, manager, port = config.server?.port ?? 3000, publicDir = path.resolve(new URL('../public', import.meta.url).pathname) }) {
+export function startServer({ home, config, manager, port = config.server?.port ?? 3000, publicDir = path.resolve(fileURLToPath(new URL('../public', import.meta.url))) }) {
   const token = readToken(home);
   return new Promise((resolve, reject) => {
     let actual = port;

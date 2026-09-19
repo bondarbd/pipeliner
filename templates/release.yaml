@@ -5,7 +5,7 @@ description: >-
   Для каждого проекта: обновить develop, отпочковать release/0.N, собрать в Jenkins,
   затем собрать отчёт и опубликовать его в Confluence (агент + проверка).
 params:
-  release: { type: string, required: true, label: "Номер релиза N (ветка release/0.N)" }
+  release: { type: string, required: true, label: "Номер релиза N (ветка release/0.N)", pattern: "^[0-9]+$" }
 items:
   source: dirs
 modes: [all, pilot]
@@ -13,8 +13,8 @@ steps:
   - name: branch
     each: true
     resource: "repo:${{ item.dir }}"
-    check: bash ${{ run.skills }}/release/scripts/git_release.sh exists "${{ item.dir }}" release/0.${{ run.params.release }}
-    shell: bash ${{ run.skills }}/release/scripts/git_release.sh create "${{ item.dir }}" release/0.${{ run.params.release }} "${{ run.env.DEVELOP_BRANCH || 'develop' }}"
+    check: bash "${{ run.skills }}/release/scripts/git_release.sh" exists "${{ item.dir }}" "release/0.${{ run.params.release }}"
+    shell: bash "${{ run.skills }}/release/scripts/git_release.sh" create "${{ item.dir }}" "release/0.${{ run.params.release }}" "${{ run.env.DEVELOP_BRANCH || 'develop' }}"
     output: keys
     env: [DEVELOP_BRANCH]
     timeout: 600
@@ -22,12 +22,12 @@ steps:
   - name: build
     each: true
     shell: >-
-      python3 ${{ run.skills }}/release/scripts/jenkins.py run-one
-      --project ${{ item.name }} --branch release/0.${{ run.params.release }}
-      --commit ${{ item.steps.branch.commit }} --out $OUT
+      python3 "${{ run.skills }}/release/scripts/jenkins.py" run-one
+      --project "${{ item.name }}" --branch "release/0.${{ run.params.release }}"
+      --commit "${{ item.steps.branch.commit }}" --max-retries 0 --out "$OUT"
     output: keys
-    env: [JENKINS_URL, JENKINS_USER, JENKINS_TOKEN, JENKINS_INSECURE, BRANCH_PARAM, EXTRA_PARAMS, MAX_RETRIES, DIST_ARTIFACT_REGEX, DIST_URL_REGEX, COMMIT_REGEX]
-    timeout: 5400
+    env: [JENKINS_URL, JENKINS_USER, JENKINS_TOKEN, JENKINS_INSECURE, BRANCH_PARAM, EXTRA_PARAMS, MAX_RETRIES, RUN_ONE_MAX_WAIT, DIST_ARTIFACT_REGEX, DIST_URL_REGEX, COMMIT_REGEX]
+    timeout: 6600
     retriable: true
     parallel: 10
     on_fail:
@@ -53,7 +53,7 @@ steps:
       input: ${{ run.steps.report.rows }}
       timeout: 900
     output: keys
-    verify: bash ${{ run.skills }}/release/scripts/confluence_check.sh "${{ run.params.release }}" "${{ run.steps.report.path }}"
+    verify: bash "${{ run.skills }}/release/scripts/confluence_check.sh" "${{ run.params.release }}" "${{ run.steps.report.path }}"
     env: [CONFLUENCE_URL, CONFLUENCE_TOKEN, CONFLUENCE_USER, CONFLUENCE_PASSWORD, CONFLUENCE_SPACE, CONFLUENCE_RELEASE_TITLE]
     on_fail:
       - { do: pause }

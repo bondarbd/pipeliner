@@ -19,6 +19,14 @@ const ok = () => ({
 });
 const msgs = (t) => validateTemplate(t).map((e) => `${e.path}: ${e.message}`);
 
+test('params.<k>.pattern: valid regex is accepted, invalid one is rejected', () => {
+  const good = ok(); good.params.release.pattern = '^[0-9]+$';
+  assert.deepEqual(msgs(good), []);
+  const bad = ok(); bad.params.release.pattern = '[unclosed';
+  const m = msgs(bad);
+  assert.ok(m.some((x) => x.includes('params.release.pattern')));
+});
+
 test('valid template has no errors', () => { assert.deepEqual(msgs(ok()), []); });
 
 test('structural errors', () => {
