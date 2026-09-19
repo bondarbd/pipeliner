@@ -10,10 +10,19 @@ import { newRunId, VALID_ID } from './engine/store.js';
 export const QUEUE_RE = /^[a-z][a-z0-9-]*$/;
 export const MAX_SNOOZES = 3;
 const KEEP_CLOSED_DAYS = 30;
-const BAD_LINK = /^\s*(javascript|data|vbscript):/i;
+const BAD_SCHEMES = new Set(['javascript:', 'data:', 'vbscript:', 'file:', 'blob:']);
 
 const pad = (n) => String(n).padStart(2, '0');
 export const localDate = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+// the link is rendered as an href on the board: it must parse as a URL and not run code
+export function checkLink(link) {
+  if (!link) return null;
+  let u;
+  try { u = new URL(String(link).trim()); } catch { throw new Error('link must be a URL (https://… or an app scheme)'); }
+  if (BAD_SCHEMES.has(u.protocol)) throw new Error(`link scheme ${u.protocol} is not allowed`);
+  return u.href;
+}
 
 function dir(home, q) {
   if (!QUEUE_RE.test(String(q))) throw new Error(`invalid queue name: ${q}`);
@@ -41,10 +50,10 @@ const closed = (it, status, note = it.note) => ({ ...it, status, until: null, ru
 export function add(home, q, { text, link } = {}) {
   text = String(text ?? '').trim();
   if (!text) throw new Error('empty text');
-  if (link && BAD_LINK.test(link)) throw new Error('link must be a http(s) or app URL');
+  link = checkLink(link);
   let id = newRunId();
   while (fs.existsSync(file(home, q, id))) id = newRunId();   // same second, same random suffix: try again
-  return write(home, q, { id, text, link: link || null, createdAt: new Date().toISOString(), status: 'open', until: null, snoozes: 0, runId: null, closedAt: null, note: null });
+  return write(home, q, { id, text, link, createdAt: new Date().toISOString(), status: 'open', until: null, snoozes: 0, runId: null, closedAt: null, note: null });
 }
 
 export function queues(home) {

@@ -11,8 +11,11 @@ const placeholder = (step) => new Proxy({}, { get: (_, k) => (typeof k === 'stri
 export function previewRows(manager, t, { params = {}, items = [] } = {}, masker) {
   const steps = t.tpl.steps;
   const cells = (filter) => Object.fromEntries(steps.filter(filter).map((s) => [s.name, { output: placeholder(s.name) }]));
+  params = manager.withDefaults(t.tpl, params);
+  const perr = manager.checkParams(t.tpl, params);   // a dry run must fail the same way a real one would
+  if (perr.length) throw new Error(`invalid params: ${perr.map((e) => `${e.path} ${e.message}`).join(', ')}`);
   const resolved = manager.resolveItems(t.tpl, items).map((i) => ({ status: 'active', ...i }));
-  const run = { id: 'dry', dir: path.join(manager.home, 'runs', 'dry'), templateDir: t.dir, params: manager.withDefaults(t.tpl, params), steps,
+  const run = { id: 'dry', dir: path.join(manager.home, 'runs', 'dry'), templateDir: t.dir, params, steps,
     items: resolved, cells: Object.fromEntries(resolved.map((i) => [i.name, cells((s) => s.each)])), once: cells((s) => s.once) };
   const rows = [];
   for (const s of steps) {

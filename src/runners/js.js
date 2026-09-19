@@ -15,10 +15,13 @@ export async function run(step, r) {
     sh: (argv, opts = {}) => runProcess({ argv, cwd: opts.cwd || r.cwd, env: stepEnv(r), timeout: opts.timeout || r.timeout, logPath: r.logPath, masker: r.masker, onSpawn: r.onSpawn }),
   };
   try {
+    if (!file.startsWith(path.resolve(r.templateDir) + path.sep)) throw new Error(`${step.js} is outside the template directory`);
     const mod = await import(`${pathToFileURL(file).href}?t=${Date.now()}`);
     const fn = mod.default || mod.run;
     if (typeof fn !== 'function') throw new Error(`${step.js} must export default async (ctx) => object`);
-    const output = await fn(ctx);
+    let timer;
+    const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`timeout after ${r.timeout}s`)), r.timeout * 1000); });
+    const output = await Promise.race([fn(ctx), timeout]).finally(() => clearTimeout(timer));
     return { ok: true, output: output ?? {} };
   } catch (e) {
     log(String(e.stack || e));

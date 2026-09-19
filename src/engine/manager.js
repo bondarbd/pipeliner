@@ -19,16 +19,14 @@ export class Manager {
     this.templates = new Map(); this.templateErrors = [];
   }
 
+  // recover: true = attach and resume every unfinished run (the server), a run id = only that
+  // one (a CLI command about it), false = none (render, dry-run, creating a new run)
   async init({ recover = true } = {}) {
     fs.mkdirSync(this.home, { recursive: true, mode: 0o700 });
     this.reloadTemplates();
-    if (recover) {
-      for (const s of store.listRuns(this.home)) {
-        if (['done', 'aborted'].includes(s.status)) continue;
-        const run = store.loadRun(this.home, s.id);
-        const engine = this.attach(run);
-        await engine.recover();
-      }
+    for (const s of recover ? store.listRuns(this.home) : []) {
+      if (['done', 'aborted'].includes(s.status) || (recover !== true && s.id !== recover)) continue;
+      await this.attach(store.loadRun(this.home, s.id)).recover();
     }
     return this;
   }
@@ -88,7 +86,7 @@ export class Manager {
     }
     return items.map((raw) => {
       const it = typeof raw === 'string' ? { name: raw } : { ...raw };
-      if (!it.name) throw new Error('item without name');
+      if (!store.validName(it.name)) throw new Error(`invalid item name: ${JSON.stringify(it.name ?? null)}`);
       if (!it.dir) {
         const candidate = path.join(this.config.projects_root, it.name);
         if (fs.existsSync(candidate)) it.dir = candidate;
@@ -100,7 +98,10 @@ export class Manager {
   // what the user confirms when trusting a template: every command it may run, plus its sidecar scripts
   templateCommands(t) {
     const body = (s) => s.shell ?? s.js ?? s.agent?.prompt.split('\n')[0] ?? s.human?.question;
-    return t.tpl.steps.flatMap((s) => [`${s.name} [${bodyKind(s)}${s.outbound ? ', outbound' : ''}]: ${body(s)}`, s.check && `${s.name} check: ${s.check}`, s.verify && `${s.name} verify: ${s.verify}`])
+    const expr = (s, k, v) => v !== undefined && `${s.name} ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`;
+    return t.tpl.steps.flatMap((s) => [`${s.name} [${bodyKind(s)}${s.outbound ? ', outbound' : ''}]: ${body(s)}`,
+      expr(s, 'check', s.check), expr(s, 'verify', s.verify), expr(s, 'when', s.when), expr(s, 'items', s.items),
+      expr(s, 'cwd', s.cwd), expr(s, 'resource', s.resource), expr(s, 'input', s.agent?.input)])
       .filter(Boolean).concat((t.sidecars || []).map((p) => `sidecar: ${p}`));
   }
   trustFile() { return path.join(this.home, 'trusted.json'); }

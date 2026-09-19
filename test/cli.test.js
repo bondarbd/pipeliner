@@ -43,15 +43,23 @@ test('init, doctor, validate, render, dry-run and a real hello run', () => {
   assert.equal(r.code, 2);
   r = sh(['show', id], env);
   assert.equal(r.code, 0);                                   // show reports state, it is not a failure
-  assert.match(r.out, /gamma +flaky +paused +exit 2: permanent error/);
+  assert.match(r.out, /gamma +flaky +paused ×2 +exit 2: permanent error/);   // ×2: the ladder retried once
   r = sh(['log', id, 'gamma', 'flaky'], env);
   assert.equal(r.code, 0); assert.match(r.out, /flaky\.\d+\.log[\s\S]*permanent error: pom.xml broken/);
+  r = sh(['retry', id, 'nobody', 'flaky'], env);              // a typo never creates a phantom cell
+  assert.equal(r.code, 1); assert.match(r.out, /unknown item nobody/);
   r = sh(['skip', id, 'gamma', 'flaky'], env);
   assert.equal(r.code, 0, r.out); assert.match(r.out, /status=done/);
   r = sh(['retry', id, 'gamma', 'flaky'], env);
   assert.equal(r.code, 1); assert.match(r.out, /is done — nothing to do/);
   r = sh(['render', 'hello', '--step', 'greet'], env);       // no --item: first item is used
   assert.equal(r.code, 0); assert.match(r.out, /alpha/);
+  r = sh(['queue', '--alll'], env);                          // typos in flags are errors, not silently ignored
+  assert.equal(r.code, 1); assert.match(r.out, /unknown option\(s\): --alll/);
+  r = sh(['log', id, 'beta', 'flaky', '--seq', '1'], env);   // beta failed once: two attempts on disk
+  assert.equal(r.code, 1);                                   // seq 1 belongs to another cell; the header lists this cell's seqs
+  r = sh(['show', id], env);
+  assert.match(r.out, /beta +flaky +success ×2/);
 });
 
 test('debts: add → board → morning run → answers close, snooze or keep items', () => {

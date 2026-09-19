@@ -53,6 +53,12 @@ test('js: module gets ctx and returns output; errors are captured', async () => 
   assert.match(fs.readFileSync(r.logPath, 'utf8'), /hi/);
   const bad = await js.run({ name: 'j', js: './boom.js' }, r);
   assert.equal(bad.ok, false); assert.equal(bad.error, 'boom');
+  fs.writeFileSync(path.join(os.tmpdir(), 'rb-outside.js'), 'export default async () => ({ pwned: 1 });');
+  const outside = await js.run({ name: 'j', js: path.relative(r.templateDir, path.join(os.tmpdir(), 'rb-outside.js')) }, r);
+  assert.equal(outside.ok, false); assert.match(outside.error, /outside the template directory/);
+  fs.writeFileSync(path.join(r.templateDir, 'hang.js'), 'export default () => new Promise(() => {});');
+  const hung = await js.run({ name: 'j', js: './hang.js' }, { ...r, timeout: 0.05 });
+  assert.equal(hung.ok, false); assert.match(hung.error, /timeout after 0.05s/);
 });
 
 test('human returns waiting with rendered question', async () => {

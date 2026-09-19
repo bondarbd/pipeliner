@@ -57,8 +57,12 @@ test('templates, projects, trust flow, run lifecycle over HTTP', async () => {
   assert.equal((await (await api(`/runs/${id}`)).json()).status, 'done');
   const ctx = await (await api(`/runs/${id}/context?item=p1`)).json();
   assert.match(ctx.notes, /A: Да/);
-  assert.equal((await api(`/runs/${id}/context?item=p1`, { method: 'PUT', body: JSON.stringify({ notes: 'edited' }) })).status, 204);
+  assert.equal((await api(`/runs/${id}/context?item=p1`, { method: 'PUT', body: JSON.stringify({ notes: 'edited', notesHash: ctx.notesHash }) })).status, 204);
   assert.equal((await (await api(`/runs/${id}/context?item=p1`)).json()).notes, 'edited');
+  // a stale hash (someone appended meanwhile) is refused instead of overwriting
+  assert.equal((await api(`/runs/${id}/context?item=p1`, { method: 'PUT', body: JSON.stringify({ notes: 'clobber', notesHash: ctx.notesHash }) })).status, 409);
+  assert.equal((await (await api(`/runs/${id}/context?item=p1`)).json()).notes, 'edited');
+  assert.deepEqual(await (await api('/clean', { method: 'POST', body: JSON.stringify({ days: 9999 }) })).json(), { removed: 0 });
   const rend = await (await api(`/runs/${id}/render`, { method: 'POST', body: JSON.stringify({ item: 'p1', step: 's' }) })).json();
   assert.equal(rend.command, 'echo hi');
   assert.equal((await api(`/runs/${id}/log?item=p1&step=s&seq=1`)).status, 404);   // fake runner writes no log

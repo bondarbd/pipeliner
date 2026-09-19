@@ -75,10 +75,10 @@ test('items.source: queue pulls open queue items and ignores --items', async () 
   await m.init();
   m.trust('demo', m.templates.get('demo').hash);
   const { add } = await import('../src/queue.js');
-  const a = add(home, 'debts', { text: 'first', link: 'l' }); add(home, 'debts', { text: 'second' });
+  const a = add(home, 'debts', { text: 'first', link: 'https://l/' }); add(home, 'debts', { text: 'second' });
   const run = await m.create({ templateName: 'demo', items: ['ignored'] });
   const got = run.items.map((i) => [i.name === a.id, i.text, i.queue, i.link]).sort((x, y) => x[1].localeCompare(y[1]));
-  assert.deepEqual(got, [[true, 'first', 'debts', 'l'], [false, 'second', 'debts', null]]);
+  assert.deepEqual(got, [[true, 'first', 'debts', 'https://l/'], [false, 'second', 'debts', null]]);
   assert.ok(run.items[0].addedAt);
   const { done, list } = await import('../src/queue.js');
   assert.ok(list(home, 'debts').every((it) => it.runId === run.id));   // taken by this run
@@ -92,6 +92,19 @@ test('items.source: queue pulls open queue items and ignores --items', async () 
   assert.deepEqual(empty.items, []);
 });
 
+test('init({recover: <id>}) resumes only that run; others are left untouched on disk', async () => {
+  const { m, home } = setup();
+  await m.init();
+  m.trust('demo', m.templates.get('demo').hash);
+  const runs = [];
+  for (const p of ['p1', 'p2']) { const r = await m.create({ templateName: 'demo', params: { n: '1' }, items: [p] }); await m.engine(r.id).idle(); runs.push(r); }
+  for (const r of runs) { const j = JSON.parse(fs.readFileSync(path.join(r.dir, 'run.json'), 'utf8')); j.status = 'running'; j.cells[r.items[0].name].s.status = 'running'; fs.writeFileSync(path.join(r.dir, 'run.json'), JSON.stringify(j)); }
+  const m2 = await new Manager({ home, config: m.config, runners: m.runners, envValues: {}, templateDirs: m.templateDirs }).init({ recover: runs[0].id });
+  assert.deepEqual([...m2.engines.keys()], [runs[0].id]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(runs[1].dir, 'run.json'), 'utf8')).status, 'running');
+  await assert.rejects(m2.create({ templateName: 'demo', params: { n: '1' }, items: ['__proto__'] }), /invalid item name/);
+});
+
 test('templateCommands lists a js step\'s sidecar script', async () => {
   const { m } = setup();
   fs.writeFileSync(path.join(m.templateDirs[0], 'demo2.yaml'), 'name: demo2\nsteps:\n  - { name: r, once: true, js: ./demo2/report.js }\n');
@@ -100,5 +113,7 @@ test('templateCommands lists a js step\'s sidecar script', async () => {
   await m.init();
   const commands = m.templateCommands(m.templates.get('demo2'));
   assert.ok(commands.some((c) => c.includes('demo2/report.js')));
+  const withExpr = m.templateCommands({ tpl: { steps: [{ name: 'x', each: true, shell: 'e', when: '${{ item.go }}', resource: 'repo:${{ item.dir }}' }] } });
+  assert.deepEqual(withExpr, ['x [shell]: e', 'x when: ${{ item.go }}', 'x resource: repo:${{ item.dir }}']);
   assert.ok(commands.some((c) => c === `sidecar: ${path.join('demo2', 'report.js')}`));
 });

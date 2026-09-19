@@ -166,7 +166,9 @@ export class Engine extends EventEmitter {
     const blocked = items.some((it) => {
       const p = positions.get(it.name);
       if (p >= i) return false;
-      return step.barrier !== 'succeeded' || !STUCK.has(this.cell(it, this.steps[p]).status);
+      const cur = this.steps[p];   // the item may be held by an earlier once-step, whose cell is shared
+      const status = (cur.once ? store.itemCell(this.run, null, cur.name) : this.cell(it, cur)).status;
+      return step.barrier !== 'succeeded' || !STUCK.has(status);
     });
     if (!blocked && this.hasSlot(step)) this.launch(null, step);
   }
@@ -181,14 +183,24 @@ export class Engine extends EventEmitter {
 
   launch(item, step) {
     const key = this.key(item, step);
-    if (!this.active.size) {   // leaving idle: move the budget clock forward by the time nothing ran
+    if (!this.active.size) {   // leaving idle: move the budget clock forward by the time nothing ran, then arm it
       const b = this.run.budgets;
       b.since = new Date(Date.parse(b.since) + (Date.now() - this.idleSince)).toISOString();
+      const left = this.config.limits.run_timeout * 1000 - (Date.now() - Date.parse(b.since));
+      this.budgetTimer = setTimeout(() => { this.budgetTimer = null; this.scheduleTick(); }, Math.max(left, 0) + 50);
+      this.budgetTimer.unref?.();
     }
     this.active.set(key, { step: step.name, agent: !!step.agent });
     this.execCell(item, step)
-      .catch((e) => { const c = this.cell(item, step); c.error = `engine error: ${e.message}`; this.finish(item, step, c, 'paused'); })
-      .finally(() => { this.active.delete(key); if (!this.active.size) this.idleSince = Date.now(); this.scheduleTick(); });
+      .catch((e) => {
+        try { const c = this.cell(item, step); c.error = `engine error: ${e.message}`; this.finish(item, step, c, 'paused'); }
+        catch (e2) { this.emit('error', e2); }   // e.g. the disk is full and even saving the pause fails
+      })
+      .finally(() => {
+        this.active.delete(key);
+        if (!this.active.size) { this.idleSince = Date.now(); clearTimeout(this.budgetTimer); this.budgetTimer = null; }
+        this.scheduleTick();
+      });
   }
 
   async execCell(item, step) {
@@ -318,32 +330,37 @@ export class Engine extends EventEmitter {
     if (!Array.isArray(list)) throw new Error(`items: expression of step ${step.name} must return an array`);
     const idx = this.steps.indexOf(step);
     const existing = new Set(this.run.items.map((i) => i.name));
-    let added = 0;
-    for (const raw of list) {
-      if (!raw || !raw.name || existing.has(raw.name)) continue;
-      existing.add(raw.name);
-      this.run.items.push({ status: 'active', addedAt: now(), ...raw });
+    const fresh = list.filter((raw) => raw && store.validName(raw.name) && !existing.has(raw.name) && existing.add(raw.name));
+    const limit = this.config.limits.max_new_items ?? 50;
+    if (fresh.length > limit) throw new Error(`step ${step.name} produced ${fresh.length} new items (limit ${limit}) — check the expression or raise limits.max_new_items`);
+    for (const raw of fresh) {
+      this.run.items.push({ ...raw, status: 'active', addedAt: now() });
       // each-steps up to and including the producer never ran for this item; later ones start pending
       this.steps.forEach((s, k) => { if (s.each) store.itemCell(this.run, raw.name, s.name).status = k <= idx ? 'n/a' : 'pending'; });
-      added++;
     }
-    if (list.length > 50) this.pause(`step ${step.name} produced ${list.length} items — resume the run to continue`, 'run.pause');
-    store.addEvent(this.run, { type: 'items.added', step: step.name, count: added });
+    store.addEvent(this.run, { type: 'items.added', step: step.name, count: fresh.length, ignored: list.length - fresh.length });
   }
 
   // ---- user actions
+  // a cell named by the user: must exist, so a typo never creates a phantom item or step
+  knownCell(itemName, stepName) {
+    if (itemName && !this.item(itemName)) throw new Error(`unknown item ${itemName} (items: ${this.run.items.map((i) => i.name).join(', ') || 'none'})`);
+    const step = this.step(stepName);
+    if (!step || (itemName ? !step.each : !step.once)) throw new Error(`unknown step ${itemName ?? '*'}:${stepName}`);
+    return store.itemCell(this.run, itemName, stepName);
+  }
   userCell(itemName, stepName, allowed, what) {
     if (TERMINAL_RUN.has(this.run.status)) throw new Error(`run is ${this.run.status}`);
-    const c = store.itemCell(this.run, itemName, stepName);
+    const c = this.knownCell(itemName, stepName);
     if (!allowed.includes(c.status)) throw new Error(`cannot ${what} cell in status ${c.status}`);
     return c;
   }
   retry(itemName, stepName) {
     const c = this.userCell(itemName, stepName, RETRIABLE, 'retry');
     if (c.noRetry) throw new Error(`retry blocked: ${c.error}`);
-    c.attempts = 0; c.questions = 0; c.status = 'pending'; c.error = null; c.retryAt = null;   // a user retry grants a fresh allowance
+    // a user retry grants a fresh allowance: attempts, agent questions and the on_fail ladder start over
+    Object.assign(c, { attempts: 0, questions: 0, rung: 0, retriesUsed: 0, diagnosed: false, status: 'pending', error: null, retryAt: null });
     if (itemName) this.item(itemName).status = 'active';
-    if (this.run.status === 'done') this.run.status = 'running';
     this.changed({ type: 'cell.retry', item: itemName, step: stepName, by: 'user' });
     this.scheduleTick();
   }
@@ -384,7 +401,7 @@ export class Engine extends EventEmitter {
   answer(itemName, stepName, { answer, fields = {} } = {}) {
     if (TERMINAL_RUN.has(this.run.status)) throw new Error(`run is ${this.run.status}`);
     if (itemName === '__pilot__') return this.answerPilot(answer);
-    const c = store.itemCell(this.run, itemName, stepName);
+    const c = this.knownCell(itemName, stepName);
     if (c.status !== 'waiting') throw new Error(`cell ${itemName ?? '*'}:${stepName} is not waiting`);
     const options = c.waiting.options || [];
     if (!c.needInput && options.length && !options.includes(answer)) throw new Error(`answer must be one of: ${options.join(' | ')}`);

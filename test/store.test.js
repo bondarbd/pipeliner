@@ -44,6 +44,22 @@ test('outputs, notes, events, seq', () => {
   assert.equal(store.itemCell(run, 'p9', 'a').status, 'pending');
 });
 
+test('item names that are prototype keys or paths are rejected; old run.json is migrated on load', () => {
+  const { home, run } = mk();
+  assert.throws(() => store.itemCell(run, '__proto__', 'a'), /invalid item name/);
+  assert.throws(() => store.itemCell(run, 'x/y', 'a'), /invalid item name/);
+  assert.equal({}.a, undefined);
+  // strip fields a v1 file would not have
+  const j = JSON.parse(fs.readFileSync(path.join(run.dir, 'run.json'), 'utf8'));
+  delete j.budgets.since; delete j.items[0].addedAt; delete j.cells.p1.a.questions; delete j.cells.p1.a.via;
+  fs.writeFileSync(path.join(run.dir, 'run.json'), JSON.stringify(j));
+  const loaded = store.loadRun(home, run.id);
+  assert.equal(loaded.budgets.since, loaded.createdAt);
+  assert.equal(loaded.items[0].addedAt, loaded.createdAt);
+  assert.equal(loaded.cells.p1.a.questions, 0);
+  assert.equal(loaded.cells.p1.a.via, null);
+});
+
 test('buildCtx exposes run/item/output namespaces', () => {
   const { run } = mk();
   run.cells.p1.a.output = { commit: 'abc' };

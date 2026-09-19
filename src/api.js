@@ -14,6 +14,8 @@ const MIN_BYTES = 1;
 const MAX_BYTES = 1_000_000;
 const DEFAULT_BYTES = 65536;
 
+const hash = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 16);
+
 function tokensEqual(a, b) {
   const bufA = Buffer.from(String(a ?? ''));
   const bufB = Buffer.from(String(b ?? ''));
@@ -48,7 +50,7 @@ export function createApp(opts) {
   const run = (req, res) => { const r = manager.get(req.params.id); if (!r) res.status(404).json({ error: 'run not found' }); return r; };
   const eng = (req, res) => { const e = manager.engine(req.params.id); if (!e) res.status(409).json({ error: 'run is not live (finished or not loaded)' }); return e; };
   const act = (fn) => async (req, res) => { try { await fn(req, res); if (!res.headersSent) res.status(204).end(); } catch (e) { if (!res.headersSent) res.status(400).json({ error: e.message }); } };
-  const itemName = (s) => (s === '_' ? null : s);
+  const itemName = (s) => (s === '_' || s === '*' || s === '' || s == null ? null : s);   // once-step cells have no item
 
   app.get('/api/templates', (req, res) => {
     manager.reloadTemplates();
@@ -111,9 +113,20 @@ export function createApp(opts) {
     const p = store.paths(r, it);
     const steps = {};
     if (fs.existsSync(p.stepsDir)) for (const f of fs.readdirSync(p.stepsDir)) steps[f.replace(/\.json$/, '')] = JSON.parse(fs.readFileSync(path.join(p.stepsDir, f), 'utf8'));
-    res.json({ notes: fs.existsSync(p.notes) ? fs.readFileSync(p.notes, 'utf8') : '', steps });
+    const notes = fs.existsSync(p.notes) ? fs.readFileSync(p.notes, 'utf8') : '';
+    res.json({ notes, notesHash: hash(notes), steps });
   });
-  app.put('/api/runs/:id/context', act((req, res) => { const r = run(req, res); if (!r) return; const p = store.paths(r, itemName(req.query.item || '_')); fs.mkdirSync(p.ctxDir, { recursive: true }); fs.writeFileSync(p.notes, String(req.body.notes ?? '')); }));
+  // the editor sends back the hash it loaded; if an agent appended to notes.md meanwhile, refuse rather than lose its lines
+  app.put('/api/runs/:id/context', (req, res) => {
+    const r = run(req, res); if (!r) return;
+    const p = store.paths(r, itemName(req.query.item || '_'));
+    const current = fs.existsSync(p.notes) ? fs.readFileSync(p.notes, 'utf8') : '';
+    if (req.body.notesHash !== undefined && req.body.notesHash !== hash(current)) return res.status(409).json({ error: 'notes.md changed since you opened it — reload and re-apply your edit' });
+    fs.mkdirSync(p.ctxDir, { recursive: true });
+    fs.writeFileSync(p.notes, String(req.body.notes ?? ''));
+    res.status(204).end();
+  });
+  app.post('/api/clean', (req, res) => res.json({ removed: manager.clean(req.body?.days ? Number(req.body.days) : undefined) }));
   app.post('/api/runs/:id/render', (req, res) => {
     const r = run(req, res); if (!r) return;
     const { item, step } = req.body || {};
@@ -131,7 +144,7 @@ export function createApp(opts) {
   app.post('/api/runs/:id/cells/:item/:step/retry', act((req, res) => { const e = eng(req, res); if (e) e.retry(itemName(req.params.item), req.params.step); }));
   app.post('/api/runs/:id/cells/:item/:step/skip', act((req, res) => { const e = eng(req, res); if (e) e.skipCell(itemName(req.params.item), req.params.step); }));
   app.post('/api/runs/:id/items/:item/abort', act(async (req, res) => { const e = eng(req, res); if (e) await e.abortItem(req.params.item); }));
-  app.post('/api/runs/:id/answer', act((req, res) => { const e = eng(req, res); if (e) e.answer(req.body.item === '_' ? null : req.body.item, req.body.step, { answer: req.body.answer, fields: req.body.fields || {} }); }));
+  app.post('/api/runs/:id/answer', act((req, res) => { const e = eng(req, res); if (e) e.answer(req.body.item === '__pilot__' ? '__pilot__' : itemName(req.body.item), req.body.step, { answer: req.body.answer, fields: req.body.fields || {} }); }));
   app.post('/api/runs/:id/pause', act((req, res) => { const e = eng(req, res); if (e) e.pauseRun(); }));
   app.post('/api/runs/:id/resume', act((req, res) => { const e = eng(req, res); if (e) e.resumeRun(); }));
   app.post('/api/runs/:id/abort', act(async (req, res) => { const e = eng(req, res); if (e) await e.abort('aborted by user'); }));

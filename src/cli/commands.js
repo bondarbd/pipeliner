@@ -21,14 +21,15 @@ import { table } from './table.js';
 export const PKG_ROOT = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
 export const templateDirs = (home) => [path.join(PKG_ROOT, 'templates'), path.join(home, 'templates')];
 
-// recover=false: only templates are loaded, run.json files on disk are never touched (render, --dry-run)
-async function manager(io, recover = true) {
+// recover: a run id = attach and resume only that run; false = touch no run.json at all
+// (render, dry-run, creating a new run); true = every unfinished run (serve only)
+async function manager(io, recover = false) {
   const m = new Manager({ home: io.home, config: io.config, runners: await defaultRunners(), envValues: loadEnvFile(io.config.env_file), templateDirs: templateDirs(io.home) });
   return m.init({ recover });
 }
 const maskerFor = (io) => createMasker(secretValues(loadEnvFile(io.config.env_file)));
 const splitItems = (args) => (args.items ? args.items.split(',') : []);
-const nullable = (s) => (s === '_' || s === '-' ? null : s);
+const nullable = (s) => (s === '_' || s === '*' || s === '-' ? null : s);   // once-step cells have no item
 
 function liveServer(home) {
   try { const s = JSON.parse(fs.readFileSync(path.join(home, 'server.json'), 'utf8')); return isAlive(s.pid) ? s : null; } catch { return null; }
@@ -115,7 +116,7 @@ export async function validate(args, io) {
 }
 
 async function preview(args, io, name) {
-  const m = await manager(io, false);
+  const m = await manager(io);
   const t = m.templates.get(name);
   if (!t) { io.err(`template not found: ${name}`); return null; }
   const items = args.items ? splitItems(args) : args.item ? [args.item] : [];
@@ -131,10 +132,11 @@ export async function renderCmd(args, io) {
 
 function printRun(run, io) {
   const info = (c) => c.error || (c.waiting ? `? ${c.waiting.question}` : c.via === 'check' ? 'via check' : '');
+  const status = (c) => c.status + (c.attempts > 1 ? ` ×${c.attempts}` : '');   // ×N = automatic retries happened
   const rows = [];
   for (const s of run.steps) {
-    if (s.once) rows.push(['*', s.name, run.once[s.name].status, info(run.once[s.name])]);
-    else for (const it of run.items) { const c = run.cells[it.name]?.[s.name]; if (c) rows.push([it.name, s.name, c.status, info(c)]); }
+    if (s.once) rows.push(['*', s.name, status(run.once[s.name]), info(run.once[s.name])]);
+    else for (const it of run.items) { const c = run.cells[it.name]?.[s.name]; if (c) rows.push([it.name, s.name, status(c), info(c)]); }
   }
   io.out(`run ${run.id} [${run.templateName}] status=${run.status}${run.note ? ` note=${run.note}` : ''}${run.pilot ? ` pilot=${run.pilot.item}:${run.pilot.status}` : ''}`);
   io.out(table(rows, ['item', 'step', 'status', 'info']));
@@ -194,10 +196,10 @@ export async function run(args, io) {
     const created = await createTrusting(io, args, name, () => api(io, 'POST', '/runs', req), (hash) => api(io, 'POST', `/templates/${name}/trust`, { hash }));
     if (!created) return 3;
     io.out(`started ${created.id} (server)`);
-    return 0;
+    return printRun(await serverFollow(io, created.id, Number(args.wait) || 0), io);
   }
   return withInstanceLock(io, async () => {
-    const m = await manager(io);
+    const m = await manager(io);   // a new run: unfinished runs on disk are not touched
     if (!m.templates.has(name)) { io.err(`template not found: ${name}`); return 1; }
     const created = await createTrusting(io, args, name,
       () => m.create({ templateName: name, ...req, initiator: { via: 'cli', user: os.userInfo().username } }), (hash) => m.trust(name, hash));
@@ -225,13 +227,17 @@ export async function show(args, io) {
 export async function log(args, io) {
   const [id, item, step] = args._;
   const run = store.loadRun(io.home, id);
-  const c = store.itemCell(run, nullable(item), step);
+  const c = nullable(item) ? run.cells[item]?.[step] : run.once[step];
+  if (!c) { io.err(`no cell ${item}/${step} in run ${id}`); return 1; }
   if (!c.seq) { io.err(`${item}/${step} has not run yet`); return 1; }
   const kind = args.kind || 'log';
   if (!store.LOG_KINDS.includes(kind)) { io.err(`--kind must be ${store.LOG_KINDS.join('|')}`); return 1; }
-  const file = store.logFile(run, nullable(item), step, c.seq, kind);
-  if (!fs.existsSync(file)) { io.err(`no ${kind} for ${item}/${step} (attempt ${c.seq}): ${file}`); return 1; }
-  io.out(`# ${file}`);
+  const seq = args.seq ? Number(args.seq) : c.seq;
+  const file = store.logFile(run, nullable(item), step, seq, kind);
+  if (!fs.existsSync(file)) { io.err(`no ${kind} for ${item}/${step} (seq ${seq}): ${file}`); return 1; }
+  // earlier attempts of the same cell live next to it as <step>.<seq>.log with smaller seq
+  const attempts = fs.readdirSync(path.dirname(file)).filter((f) => f.startsWith(`${store.safe(step)}.`) && f.endsWith('.log') && !/\.(check|verify|diagnose)\.log$/.test(f)).map((f) => Number(f.split('.')[1])).sort((a, b) => a - b);
+  io.out(`# ${file}${attempts.length > 1 ? `   (attempts: seq ${attempts.join(', ')} — use --seq N)` : ''}`);
   io.out(store.tailFile(file, Number(args.bytes) || 4096).trimEnd());
   return 0;
 }
@@ -239,7 +245,7 @@ export async function log(args, io) {
 async function engineAction(args, io, id, viaServer, local) {
   if (liveServer(io.home)) { await viaServer(); return printRun(await serverFollow(io, id, Number(args.wait) || 0), io); }
   return withInstanceLock(io, async () => {
-    const m = await manager(io); const e = m.engine(id);
+    const m = await manager(io, id); const e = m.engine(id);   // only this run is resumed; others stay as they are on disk
     if (!e) {
       const r = m.get(id);
       io.err(r ? `run ${id} is ${r.status} — nothing to do` : `unknown run ${id}`);
@@ -308,14 +314,16 @@ export async function board(args, io) {
 }
 
 export async function clean(args, io) {
+  const days = args.days ? Number(args.days) : undefined;
+  if (liveServer(io.home)) { io.out(`removed ${(await api(io, 'POST', '/clean', { days })).removed} runs (server)`); return 0; }
   return withInstanceLock(io, async () => {
-    const m = await manager(io); io.out(`removed ${m.clean(args.days ? Number(args.days) : undefined)} runs`); return 0;
+    const m = await manager(io); io.out(`removed ${m.clean(days)} runs`); return 0;
   });
 }
 export async function serve(args, io) {
   const { startServer } = await import('../server.js');
   const lock = instanceLock(io.home);
-  const m = await manager(io);
+  const m = await manager(io, true);
   const s = await startServer({ home: io.home, config: io.config, manager: m, port: args.port ? Number(args.port) : undefined });
   io.out(`runboard listening on ${s.url}/#t=${s.token}`);
   const stop = () => {

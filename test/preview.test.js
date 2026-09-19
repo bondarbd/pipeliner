@@ -33,6 +33,13 @@ steps:
   assert.equal(previewRows(m, t, { params: { ver: '2' }, items: ['p1'] })[1].command, 'build --commit @a.commit --ver 2');
 });
 
+test('preview validates params like a real run (pattern, required)', async () => {
+  const { m, t } = await setup('name: t\nparams:\n  release: { type: string, required: true, pattern: "^[0-9]+$" }\nitems: { source: dirs }\nsteps:\n  - { name: a, each: true, shell: "echo release/0.${{ run.params.release }}" }\n');
+  assert.throws(() => previewRows(m, t, { params: { release: '0.301' }, items: ['p1'] }), /params.release must match \^\[0-9\]\+\$/);
+  assert.throws(() => previewRows(m, t, { items: ['p1'] }), /params.release required/);
+  assert.equal(previewRows(m, t, { params: { release: '301' }, items: ['p1'] })[0].command, 'echo release/0.301');
+});
+
 test('a dirs template without items is a clear error, not an empty table', async () => {
   const { m, t } = await setup('name: t\nitems: { source: dirs }\nsteps:\n  - { name: a, each: true, shell: "echo 1" }\n');
   assert.throws(() => previewRows(m, t, {}), /pass --items a,b \(available: p1\)/);

@@ -5,6 +5,9 @@ import crypto from 'node:crypto';
 export function runsDir(home) { return path.join(home, 'runs'); }
 export const safe = (s) => String(s).replace(/[^A-Za-z0-9._-]/g, '_');
 export const VALID_ID = /^[A-Za-z0-9._-]+$/;
+// item names are object keys and path segments: no prototype names, no separators
+const BAD_NAME = /^(__proto__|constructor|prototype)$|[/\\\0]/;
+export const validName = (n) => typeof n === 'string' && n.trim().length > 0 && n.length <= 200 && !BAD_NAME.test(n);
 
 export function newRunId() {
   const d = new Date();
@@ -44,6 +47,8 @@ function ensureDirs(run, itemName) {
 }
 
 export function itemCell(run, itemName, stepName) {
+  if (itemName != null && !validName(itemName)) throw new Error(`invalid item name: ${JSON.stringify(itemName)}`);
+  if (!validName(stepName)) throw new Error(`invalid step name: ${JSON.stringify(stepName)}`);
   const bag = itemName ? (run.cells[itemName] ??= {}) : run.once;
   return (bag[stepName] ??= newCell());
 }
@@ -79,13 +84,22 @@ export function saveRun(run) {
   run.updatedAt = new Date().toISOString();
   const file = path.join(run.dir, 'run.json');
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(run, null, 1), { mode: 0o600 });
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try { fs.writeSync(fd, JSON.stringify(run, null, 1)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, file);
+}
+
+// run.json written by an older version: fill in fields later code relies on
+function migrate(run) {
+  run.budgets = { agentCalls: 0, since: run.createdAt, ...(run.budgets || {}) };
+  for (const it of run.items) it.addedAt ??= run.createdAt;
+  for (const bag of [run.once, ...Object.values(run.cells)]) for (const k of Object.keys(bag)) bag[k] = { ...newCell(), ...bag[k] };
+  return run;
 }
 
 export function loadRun(home, id) {
   if (!VALID_ID.test(id)) throw new Error(`invalid run id: ${id}`);
-  return JSON.parse(fs.readFileSync(path.join(runsDir(home), id, 'run.json'), 'utf8'));
+  return migrate(JSON.parse(fs.readFileSync(path.join(runsDir(home), id, 'run.json'), 'utf8')));
 }
 
 export function listRuns(home) {

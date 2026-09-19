@@ -35,7 +35,10 @@ test('snooze: date forms, reopen when due, third snooze auto-closes', () => {
   assert.equal(queue.snoozeDate('2026-12-01', wed), '2026-12-01');
   assert.throws(() => queue.snoozeDate('fri'), /expected tomorrow\|monday\|week/);
   assert.throws(() => queue.snoozeDate('2026-99-99'), /no such date/);
-  assert.throws(() => queue.add(h, 'debts', { text: 'x', link: 'javascript:alert(1)' }), /link must be/);
+  assert.throws(() => queue.add(h, 'debts', { text: 'x', link: 'javascript:alert(1)' }), /scheme javascript: is not allowed/);
+  assert.throws(() => queue.add(h, 'debts', { text: 'x', link: 'java\tscript:alert(1)' }), /scheme javascript: is not allowed/);
+  assert.throws(() => queue.add(h, 'debts', { text: 'x', link: 'not a url' }), /link must be a URL/);
+  assert.equal(queue.add(h, 'other', { text: 'x', link: 'sberchat://room/1' }).link, 'sberchat://room/1');
 
   const it = queue.add(h, 'debts', { text: 'x' });
   let s = queue.snooze(h, 'debts', it.id, 'tomorrow');

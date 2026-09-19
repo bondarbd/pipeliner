@@ -92,7 +92,10 @@ createApp({
     loadRender() { return this.guard(async () => { const r = await this.api('POST', `/runs/${this.runId}/render`, { item: this.drawer.item ?? '_', step: this.drawer.step }); this.logText = r.command; }); },
     cellAct(a) { return this.guard(async () => { await this.api('POST', `/runs/${this.runId}/cells/${encodeURIComponent(this.drawer.item ?? '_')}/${encodeURIComponent(this.drawer.step)}/${encodeURIComponent(a)}`); await this.loadRun(); }); },
     openCtx(item) { return this.guard(async () => { const d = await this.api('GET', `/runs/${this.runId}/context?item=${encodeURIComponent(item ?? '_')}`); this.ctx = { item, ...d }; }); },
-    saveNotes() { return this.guard(async () => { await this.api('PUT', `/runs/${this.runId}/context?item=${encodeURIComponent(this.ctx.item ?? '_')}`, { notes: this.ctx.notes }); }); },
+    saveNotes() { return this.guard(async () => {
+      await this.api('PUT', `/runs/${this.runId}/context?item=${encodeURIComponent(this.ctx.item ?? '_')}`, { notes: this.ctx.notes, notesHash: this.ctx.notesHash });
+      await this.openCtx(this.ctx.item);   // pick up the new hash
+    }); },
   },
   mounted() { window.addEventListener('hashchange', () => this.route()); this.route(); },
 }).mount('#app');

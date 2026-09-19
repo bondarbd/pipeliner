@@ -27,6 +27,45 @@ test('barrier all waits for every active item; succeeded ignores paused lanes', 
   assert.equal(all.run.status, 'done');
 });
 
+test('a paused once-step does not block a later once-step with barrier: succeeded; the per-item table stays clean', async () => {
+  const { engine, run } = mkEngine({ items: [{ name: 'a' }],
+    steps: [{ name: 's', each: true, shell: 'x' }, { name: 'confirm', once: true, shell: 'c' }, { name: 'summary', once: true, barrier: 'succeeded', shell: 'y' }],
+    plan: { '*:confirm': { ok: false, error: 'boom' } } });
+  engine.start(); await engine.idle();
+  assert.equal(run.once.confirm.status, 'paused');
+  assert.equal(run.once.summary.status, 'success');
+  assert.deepEqual(Object.keys(run.cells.a), ['s']);   // no phantom per-item cells for once-steps
+});
+
+test('produced items: prototype names are ignored, item fields cannot override status, too many new items pause the step', async () => {
+  const { engine, run } = mkEngine({ items: [],
+    steps: [{ name: 'scan', once: true, shell: 'x', output: 'json', items: '${{ output }}' }, { name: 'b', each: true, shell: 'y' }],
+    plan: { '*:scan': { ok: true, output: [{ name: '__proto__', x: 1 }, { name: 'ok', status: 'aborted' }, { name: 'a/b' }] } } });
+  engine.start(); await engine.idle();
+  assert.deepEqual(run.items.map((i) => [i.name, i.status]), [['ok', 'active']]);
+  assert.equal({}.x, undefined);
+  assert.equal(run.status, 'done');
+  const many = mkEngine({ items: [], config: { limits: { max_new_items: 2 } },
+    steps: [{ name: 'scan', once: true, shell: 'x', output: 'json', items: '${{ output }}' }, { name: 'b', each: true, shell: 'y' }],
+    plan: { '*:scan': { ok: true, output: [{ name: 'p1' }, { name: 'p2' }, { name: 'p3' }] } } });
+  many.engine.start(); await many.engine.idle();
+  assert.equal(many.run.once.scan.status, 'paused');
+  assert.match(many.run.once.scan.error, /3 new items \(limit 2\)/);
+  assert.deepEqual(many.run.items, []);
+});
+
+test('user retry restarts the on_fail ladder', async () => {
+  const fail = { ok: false, error: 'boom' };
+  const { engine, run, fake } = mkEngine({ items: [{ name: 'a' }],
+    steps: [{ name: 's', each: true, shell: 'x', retriable: true, on_fail: [{ do: 'retry', times: 1 }, { do: 'pause' }] }],
+    plan: { 'a:s': fail } });
+  engine.start(); await engine.idle();
+  assert.equal(fake.calls.length, 2);
+  engine.retry('a', 's'); await engine.idle();
+  assert.equal(fake.calls.length, 4);   // one fresh attempt plus one automatic retry, like the first time
+  assert.equal(run.cells.a.s.status, 'paused');
+});
+
 test('once step output is visible as run.steps.<name>; produced items join at the next step', async () => {
   const { engine, run } = mkEngine({ items: [],
     steps: [{ name: 'scan', once: true, shell: 'x', output: 'json', items: '${{ output.filter(p => p.vulnerable).map(p => ({ name: p.name, lib: p.lib })) }}' },
