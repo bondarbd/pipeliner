@@ -14,6 +14,8 @@ import { isAlive } from '../engine/proc.js';
 import { instanceLock, LockBusy } from '../engine/locks.js';
 import { createMasker, secretValues } from '../secrets.js';
 import { previewRows } from '../preview.js';
+import * as queue from '../queue.js';
+import { boardRows, ageOf } from '../board.js';
 import { table } from './table.js';
 
 export const PKG_ROOT = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
@@ -200,6 +202,7 @@ export async function run(args, io) {
     const created = await createTrusting(io, args, name,
       () => m.create({ templateName: name, ...req, initiator: { via: 'cli', user: os.userInfo().username } }), (hash) => m.trust(name, hash));
     if (!created) return 3;
+    if (!created.items.length && m.templates.get(name).tpl.items?.source === 'queue') { io.out(`no open items in queue ${m.templates.get(name).tpl.items.queue}`); return 0; }
     io.out(`started ${created.id}`);
     return printRun(await followEngine(m.engine(created.id), io), io);
   });
@@ -258,6 +261,42 @@ export function answer(args, io) {
   const [id, item, step, ...rest] = args._; const a = rest.join(' ');
   return engineAction(args, io, id, () => api(io, 'POST', `/runs/${id}/answer`, { item, step: nullable(step), answer: a }), (e) => e.answer(nullable(item), nullable(step), { answer: a }));
 }
+// ---- queues: plain files, no engine involved
+export async function add(args, io) {
+  const [q, ...rest] = args._;
+  let text = rest.join(' ');
+  if (!text || text === '-') text = fs.readFileSync(0, 'utf8');
+  const it = queue.add(io.home, q, { text, link: args.link });
+  io.out(`added ${q}/${it.id}`);
+  return 0;
+}
+export async function queueCmd(args, io) {
+  const rows = queue.list(io.home, args._[0]).filter((it) => it.status === 'open' || it.status === 'snoozed')
+    .map((it) => [it.queue, it.id, it.status + (it.until ? ` до ${it.until}` : ''), ageOf(it.createdAt), it.text.slice(0, 80), it.link || '']);
+  io.out(rows.length ? table(rows, ['queue', 'id', 'status', 'age', 'text', 'link']) : 'no open items');
+  return 0;
+}
+export async function done(args, io) { const [q, id] = args._; queue.done(io.home, q, id); io.out(`done ${q}/${id}`); return 0; }
+export async function drop(args, io) { const [q, id] = args._; queue.drop(io.home, q, id, 'dropped by user'); io.out(`dropped ${q}/${id}`); return 0; }
+export async function snooze(args, io) {
+  const [q, id, when] = args._;
+  const it = queue.snooze(io.home, q, id, when || 'tomorrow');
+  io.out(it.status === 'dropped' ? `dropped ${q}/${id}: ${it.note}` : `snoozed ${q}/${id} until ${it.until}`);
+  return 0;
+}
+export async function board(args, io) {
+  const all = !!args.all;
+  let rows;
+  if (liveServer(io.home)) rows = await api(io, 'GET', `/board${all ? '?all=1' : ''}`);
+  else {
+    const runs = store.listRuns(io.home).filter((s) => !['done', 'aborted'].includes(s.status)).map((s) => store.loadRun(io.home, s.id));
+    rows = boardRows({ runs, items: queue.list(io.home), all });
+  }
+  if (!rows.length) { io.out(all ? 'nothing alive' : 'nothing needs you now (try --all)'); return 0; }
+  io.out(table(rows.map((r) => [r.group, r.item, r.step || '', r.state, ageOf(r.age), r.info.slice(0, 90), r.link || '', r.runId || '']), ['group', 'item', 'step', 'state', 'age', 'info', 'link', 'run']));
+  return 0;
+}
+
 export async function clean(args, io) {
   return withInstanceLock(io, async () => {
     const m = await manager(io); io.out(`removed ${m.clean(args.days ? Number(args.days) : undefined)} runs`); return 0;

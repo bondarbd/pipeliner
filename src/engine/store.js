@@ -57,7 +57,7 @@ export function createRun(home, { template, params = {}, items = [], mode = 'all
     steps: structuredClone(template.tpl.steps), params, mode,
     status: 'running', pausedByUser: false, note: null,
     createdAt: now, updatedAt: now, finishedAt: null, initiator,
-    items: items.map((it) => ({ status: 'active', ...it })),
+    items: items.map((it) => ({ status: 'active', addedAt: now, ...it })),
     cells: {}, once: {},
     pilot: mode === 'pilot' && items.length ? { item: items[0].name, status: 'running' } : null,
     pilotNotes: null, budgets: { agentCalls: 0, since: now }, seq: 0, history: [],

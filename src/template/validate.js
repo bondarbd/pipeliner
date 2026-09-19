@@ -12,7 +12,8 @@ export function validateTemplate(tpl) {
   const err = (p, m) => errs.push({ path: p, message: m });
   if (!tpl || typeof tpl !== 'object') return [{ path: '', message: 'template must be a mapping' }];
   if (!/^[a-z][a-z0-9-]*$/.test(tpl.name || '')) err('name', 'name must match ^[a-z][a-z0-9-]*$');
-  if (tpl.items?.source && !['dirs', 'manual'].includes(tpl.items.source)) err('items.source', 'must be dirs or manual');
+  if (tpl.items?.source && !['dirs', 'manual', 'queue'].includes(tpl.items.source)) err('items.source', 'must be dirs, manual or queue');
+  if (tpl.items?.source === 'queue' && !/^[a-z][a-z0-9-]*$/.test(tpl.items.queue || '')) err('items.queue', 'queue name required, ^[a-z][a-z0-9-]*$');
   for (const m of tpl.modes || []) if (!['all', 'pilot'].includes(m)) err('modes', `unknown mode ${m}`);
   for (const [k, p] of Object.entries(tpl.params || {})) {
     if (p?.type && !['string', 'number', 'boolean'].includes(p.type)) err(`params.${k}.type`, 'must be string|number|boolean');
@@ -42,7 +43,12 @@ export function validateTemplate(tpl) {
     }
     if (s.human !== undefined) {
       if (typeof s.human?.question !== 'string') err(`${p}.human.question`, 'question required');
+      if (s.human?.pause_on !== undefined && !Array.isArray(s.human.pause_on)) err(`${p}.human.pause_on`, 'must be a list (empty = never pause)');
       if (s.on_fail) err(`${p}.on_fail`, 'on_fail not applicable to human step');
+      if (s.outbound) err(`${p}.outbound`, 'outbound not applicable to human step');
+    } else if (s.outbound) {
+      const prev = tpl.steps[i - 1];
+      if (!prev || prev.human === undefined || !!prev.each !== !!s.each) err(`${p}.outbound`, 'outbound step must directly follow a human step of the same kind (each/once)');
     }
     if (s.on_fail !== undefined && s.human === undefined) {
       if (!Array.isArray(s.on_fail) || !s.on_fail.length) err(`${p}.on_fail`, 'must be a non-empty list');

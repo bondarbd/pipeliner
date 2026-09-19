@@ -15,6 +15,7 @@ const RETRIABLE = ['paused', 'interrupted', 'unverified', 'failed', 'skipped'];
 const SKIPPABLE = ['paused', 'interrupted', 'unverified', 'failed', 'pending', 'waiting'];
 const YES = ['Да', 'да', 'Yes', 'yes'];
 const NO = ['Нет', 'нет', 'No', 'no'];
+const CONFIRM = [...YES, 'Отправить', 'отправить', 'Подтверждаю', 'подтверждаю', 'Send', 'send'];
 const MAX_QUESTIONS = 3;   // NEED_INPUT rounds per cell before the lane pauses instead of asking again
 
 const now = () => new Date().toISOString();
@@ -126,7 +127,8 @@ export class Engine extends EventEmitter {
   checkBudgets() {
     if (this.run.pausedByUser || this.isFinished()) return this.run.pausedByUser;
     const { limits } = this.config; const b = this.run.budgets;
-    if (Date.now() - Date.parse(b.since) > limits.run_timeout * 1000) this.pause('budget: run_timeout exceeded — resume to continue', 'run.timeout');
+    // the wall-clock budget only counts while something is executing: a run waiting for a human all day is fine
+    if (this.active.size && Date.now() - Date.parse(b.since) > limits.run_timeout * 1000) this.pause('budget: run_timeout exceeded — resume to continue', 'run.timeout');
     else if (b.agentCalls >= limits.max_agent_calls) this.pause(`budget: max_agent_calls (${limits.max_agent_calls}) exhausted — resume to continue`, 'run.budget');
     return this.run.pausedByUser;
   }
@@ -188,6 +190,10 @@ export class Engine extends EventEmitter {
     const c = this.cell(item, step);
     const ctx = this.exprCtx(item, step);
     if (step.when !== undefined && !render(step.when, ctx)) { c.error = 'when: false'; return this.finish(item, step, c, 'skipped'); }
+    if (step.outbound) {   // a step that talks to people runs only after the human said yes on the step right before it
+      const answer = this.cell(item, this.steps[this.steps.indexOf(step) - 1]).output?.answer;
+      if (!CONFIRM.includes(answer)) { c.error = `outbound: not confirmed (${answer ?? 'no answer'})`; return this.finish(item, step, c, 'skipped'); }
+    }
     if (c.attempts >= this.config.limits.max_attempts) { c.error = `budget: max_attempts (${this.config.limits.max_attempts})`; return this.finish(item, step, c, 'paused'); }
     c.attempts++; c.seq = store.nextSeq(this.run); c.status = 'running';
     c.startedAt = now(); c.finishedAt = null; c.error = null; c.waiting = null; c.note = null;
@@ -309,7 +315,7 @@ export class Engine extends EventEmitter {
     for (const raw of list) {
       if (!raw || !raw.name || existing.has(raw.name)) continue;
       existing.add(raw.name);
-      this.run.items.push({ status: 'active', ...raw });
+      this.run.items.push({ status: 'active', addedAt: now(), ...raw });
       // each-steps up to and including the producer never ran for this item; later ones start pending
       this.steps.forEach((s, k) => { if (s.each) store.itemCell(this.run, raw.name, s.name).status = k <= idx ? 'n/a' : 'pending'; });
       added++;

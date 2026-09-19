@@ -111,6 +111,18 @@ test('log bytes is clamped to a safe range; malformed JSON body yields a clean 4
   assert.ok(!body.error.includes('node_modules'));
 });
 
+test('queues over HTTP: add, list, snooze, board', async () => {
+  let r = await api('/queues/debts', { method: 'POST', body: JSON.stringify({ text: 'ответить Пете', link: 'sber://1' }) });
+  assert.equal(r.status, 201); const it = await r.json();
+  assert.equal((await api('/queues/bad name', { method: 'POST', body: JSON.stringify({ text: 'x' }) })).status, 400);
+  assert.equal((await (await api('/queues')).json()).find((q) => q.id === it.id).status, 'open');
+  assert.equal((await api(`/queues/debts/${it.id}/snooze`, { method: 'POST', body: JSON.stringify({ when: '2020-01-01' }) })).status, 204);
+  const board = await (await api('/board')).json();
+  assert.ok(board.some((row) => row.kind === 'queue' && row.item === it.id && row.state === 'overdue' && row.link === 'sber://1'));
+  assert.ok(board.some((row) => row.kind === 'run' && row.state === 'paused' && row.info === 'boom'));   // p1:s of the earlier runs
+  assert.equal((await api(`/queues/debts/${it.id}/done`, { method: 'POST' })).status, 204);
+});
+
 test('template preview returns a rendered (engine-free) row per item x step', async () => {
   const r = await api('/templates/demo/preview', { method: 'POST', body: JSON.stringify({ params: {}, items: ['p1'] }) });
   assert.equal(r.status, 200);

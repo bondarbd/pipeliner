@@ -70,6 +70,25 @@ test('init recovers unfinished runs from disk; init({recover:false}) leaves them
   assert.equal(m2.list()[0].id, run.id);
 });
 
+test('items.source: queue pulls open queue items and ignores --items', async () => {
+  const { m, home } = setup('name: demo\nitems: { source: queue, queue: debts }\nsteps:\n  - { name: s, each: true, shell: "echo ${\'$\'}{{ item.text }}" }\n');
+  await m.init();
+  m.trust('demo', m.templates.get('demo').hash);
+  const { add } = await import('../src/queue.js');
+  const a = add(home, 'debts', { text: 'first', link: 'l' }); add(home, 'debts', { text: 'second' });
+  const run = await m.create({ templateName: 'demo', items: ['ignored'] });
+  const got = run.items.map((i) => [i.name === a.id, i.text, i.queue, i.link]).sort((x, y) => x[1].localeCompare(y[1]));
+  assert.deepEqual(got, [[true, 'first', 'debts', 'l'], [false, 'second', 'debts', null]]);
+  assert.ok(run.items[0].addedAt);
+  await m.engine(run.id).idle();
+  assert.equal(m.get(run.id).status, 'done');
+  // this template has no closing step, so the items stay open; close them and the next run is empty
+  const { done } = await import('../src/queue.js');
+  for (const it of run.items) done(home, 'debts', it.name);
+  const empty = await m.create({ templateName: 'demo' });
+  assert.deepEqual(empty.items, []);
+});
+
 test('templateCommands lists a js step\'s sidecar script', async () => {
   const { m } = setup();
   fs.writeFileSync(path.join(m.templateDirs[0], 'demo2.yaml'), 'name: demo2\nsteps:\n  - { name: r, once: true, js: ./demo2/report.js }\n');

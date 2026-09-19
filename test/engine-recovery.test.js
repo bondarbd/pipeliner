@@ -48,12 +48,16 @@ test('agent-call budget and run timeout pause the run with a note', async () => 
   assert.equal(run.cells.b.s.status, 'success');
   assert.equal(run.pausedByUser, false);
 
-  const t = mkEngine({ items: [{ name: 'a' }], steps: [{ name: 's', each: true, shell: 'x' }], config: { limits: { run_timeout: 0 } } });
+  // run_timeout is checked only while something executes: it trips on the tick after a:s finishes while b:s still runs
+  const slow = (ms) => () => new Promise((r) => setTimeout(() => r({ ok: true, output: {} }), ms));
+  const t = mkEngine({ items: [{ name: 'a' }, { name: 'b' }], steps: [{ name: 's', each: true, shell: 'x' }, { name: 't', each: true, shell: 'y' }],
+    plan: { 'a:s': slow(20), 'b:s': slow(80) }, config: { limits: { run_timeout: 0 } } });
   t.run.budgets.since = new Date(Date.now() - 5000).toISOString();
   t.engine.start(); await t.engine.idle();
   assert.match(t.run.note, /run_timeout/);
+  assert.equal(t.run.cells.a.t.status, 'pending');
   t.engine.resumeRun(); await t.engine.idle();
-  assert.equal(t.run.cells.a.s.status, 'success');
+  assert.equal(t.run.status, 'done');
 });
 
 test('resource lock busy pauses the cell without spending an attempt; releasing the lock lets a retry succeed', async () => {

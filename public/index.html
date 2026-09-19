@@ -14,7 +14,7 @@
   .st-success { background: #d4edda; } .st-paused, .st-unverified { background: #f8d7da; } .st-failed { background: #dc3545; color: #fff; }
   .st-skipped, .st-n\/a { background: #e2e3e5; color: #666; } .st-interrupted { background: #ffe5b4; }
   .st-done { background: #28a745; color: #fff; } .st-aborted { background: #6b0000; color: #fff; }
-  .st-waiting_for_human { background: #ffc107; }
+  .st-waiting_for_human { background: #ffc107; } .st-overdue { background: #f8d7da; } .st-open, .st-snoozed { background: #eee; }
   pre.log { max-height: 50vh; overflow: auto; font-size: 12px; background: #111; color: #ddd; padding: .5rem; }
   .banner { border-left: 4px solid #ffc107; padding: .5rem 1rem; margin: 1rem 0; background: #fff8e1; }
   .drawer { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; margin-top: 1rem; }
@@ -27,11 +27,35 @@
   <nav>
     <ul><li><strong>runboard</strong></li></ul>
     <ul>
-      <li><a href="#/" :class="{active: view==='templates'}">Шаблоны</a></li>
+      <li><a href="#/" :class="{active: view==='board'}">Доска</a></li>
+      <li><a href="#/templates" :class="{active: view==='templates'}">Шаблоны</a></li>
       <li><a href="#/runs" :class="{active: view==='runs'}">Запуски</a></li>
     </ul>
   </nav>
   <p v-if="error" style="color:#b00">{{ error }}</p>
+
+  <section v-if="view==='board'">
+    <form @submit.prevent="addDebt" class="grid" style="align-items:end">
+      <label>Записать долг<input v-model="capture.text" placeholder="Петя: где дистрибутив 0.247?" required autofocus></label>
+      <label>Ссылка<input v-model="capture.link" placeholder="ссылка на сообщение (необязательно)"></label>
+      <label>Очередь<input v-model="capture.queue" pattern="[a-z][a-z0-9-]*"></label>
+      <button type="submit">Записать</button>
+    </form>
+    <p><small v-if="added">записано {{ added }} · разбор — утренний запуск шаблона очереди</small>
+      <label style="float:right"><input type="checkbox" v-model="boardAll" @change="loadBoard"> показать всё живое</label></p>
+    <p v-if="!board.length"><i>{{ boardAll ? 'ничего живого' : 'сейчас ничего не требует вас' }}</i></p>
+    <table class="grid" v-else><thead><tr><th>группа</th><th>элемент</th><th>шаг</th><th>состояние</th><th>возраст</th><th>что</th><th></th></tr></thead>
+      <tbody><tr v-for="r in board" :key="r.kind+r.group+r.item+(r.step||'')">
+        <td>{{ r.group }}</td>
+        <td><a v-if="r.runId" :href="'#/run/'+r.runId">{{ r.item }}</a><span v-else>{{ r.item }}</span></td>
+        <td>{{ r.step || '' }}</td>
+        <td><span :class="'cell st-'+r.state">{{ r.state }}</span></td>
+        <td>{{ age(r.age) }}</td>
+        <td>{{ r.info }}</td>
+        <td style="white-space:nowrap"><a v-if="r.link" :href="r.link" target="_blank" rel="noopener">Открыть</a>
+          <span v-if="r.kind==='queue'"> <button style="padding:.1rem .5rem" @click="queueAct(r,'done')">done</button> <button class="secondary" style="padding:.1rem .5rem" @click="queueAct(r,'snooze','tomorrow')">завтра</button> <button class="outline" style="padding:.1rem .5rem" @click="queueAct(r,'drop')">×</button></span></td>
+      </tr></tbody></table>
+  </section>
 
   <section v-if="view==='templates'">
     <div class="grid">
@@ -85,6 +109,7 @@
     <div v-if="run.pilot && run.pilot.status==='waiting'" class="banner"><b>Пилот {{ run.pilot.item }} прошёл.</b> Продолжать на остальных?
       <button @click="answer('__pilot__', null, 'Да')">Да</button> <button class="secondary" @click="answer('__pilot__', null, 'Нет')">Нет</button></div>
     <div v-for="w in waitingCells" :key="w.key" class="banner"><b>{{ w.item || '*' }} / {{ w.step }}:</b> {{ w.waiting.question }}
+      <a v-if="w.item && (run.items.find(i => i.name===w.item) || {}).link" :href="run.items.find(i => i.name===w.item).link" target="_blank" rel="noopener"> Открыть</a>
       <span v-for="f in w.waiting.fields" :key="f"> <input :placeholder="f" v-model="w.fields[f]" style="width:12rem;display:inline"></span>
       <span v-if="w.waiting.options.length"><button v-for="o in w.waiting.options" :key="o" @click="answer(w.item, w.step, o, w.fields)">{{ o }}</button></span>
       <span v-else><input v-model="w.fields.answer" placeholder="ответ" style="width:20rem;display:inline"> <button @click="answer(w.item, w.step, w.fields.answer, w.fields)">Отправить</button></span></div>

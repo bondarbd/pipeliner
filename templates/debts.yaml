@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=../src/template/schema.json
+name: debts
+title: Долги по ответам
+description: >-
+  Разобрать захваченные долги (runboard add debts "…"): ответить руками и отметить
+  «Отправил», отложить на день/понедельник/неделю или закрыть. Без агента.
+items: { source: queue, queue: debts }
+steps:
+  - name: reply
+    each: true
+    human:
+      question: "${{ item.text }}"
+      options: [Отправил, Завтра, Понедельник, Через неделю, Не нужно]
+      pause_on: []
+
+  - name: close
+    each: true
+    js: ./steps/queue-answer.js

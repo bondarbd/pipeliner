@@ -3,12 +3,15 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runProcess } from '../engine/proc.js';
 import { stepEnv } from './shell.js';
+import * as queue from '../queue.js';
 
 export async function run(step, r) {
   const file = path.resolve(r.templateDir, step.js);
   const log = (m) => fs.appendFileSync(r.logPath, `${m}\n`);
+  const home = r.config.home;
   const ctx = {
     run: r.exprCtx.run, item: r.exprCtx.item, out: r.outDir, log,
+    queue: { done: (q, id) => queue.done(home, q, id), snooze: (q, id, when) => queue.snooze(home, q, id, when), drop: (q, id, note) => queue.drop(home, q, id, note) },
     sh: (argv, opts = {}) => runProcess({ argv, cwd: opts.cwd || r.cwd, env: stepEnv(r), timeout: opts.timeout || r.timeout, logPath: r.logPath, masker: r.masker, onSpawn: r.onSpawn }),
   };
   try {

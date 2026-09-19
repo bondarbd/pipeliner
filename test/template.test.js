@@ -53,6 +53,20 @@ test('ladder must end with a terminal rung; unknown step refs are reported', () 
   assert.ok(m.some((x) => x.includes("unknown or later step 'brnch'")));
 });
 
+test('queue source needs a queue name; outbound must follow a human step; pause_on: [] is fine', () => {
+  const t = ok();
+  t.items = { source: 'queue' };
+  assert.ok(msgs(t).some((x) => x.includes('items.queue: queue name required')));
+  t.items = { source: 'queue', queue: 'debts' };
+  t.steps[4].human.pause_on = [];
+  t.steps.push({ name: 'notify', each: true, shell: 'echo hi', outbound: true });   // right after the human step 'ask'
+  assert.deepEqual(msgs(t), []);
+  t.steps.push({ name: 'notify2', each: true, shell: 'echo hi', outbound: true });  // after a non-human step
+  assert.ok(msgs(t).some((x) => x.includes('steps[6].outbound: outbound step must directly follow a human step')));
+  t.steps[4].outbound = true;
+  assert.ok(msgs(t).some((x) => x.includes('outbound not applicable to human step')));
+});
+
 test('loadTemplates reads yaml dirs, later dir overrides, invalid files are reported', () => {
   const a = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-ta-'));
   const b = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-tb-'));

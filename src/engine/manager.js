@@ -5,6 +5,7 @@ import * as store from './store.js';
 import { Engine } from './run.js';
 import { loadTemplates } from '../template/load.js';
 import { bodyKind } from '../template/validate.js';
+import * as queue from '../queue.js';
 
 export class NeedsTrust extends Error {
   constructor(name, hash, commands) { super(`template ${name} (${hash.slice(0, 12)}) is not trusted yet`); this.name = 'NeedsTrust'; this.templateName = name; this.hash = hash; this.commands = commands; }
@@ -75,6 +76,9 @@ export class Manager {
   }
   resolveItems(tpl, items = []) {
     const source = tpl.items?.source || 'manual';
+    if (source === 'queue') {
+      return queue.open(this.home, tpl.items.queue).map((it) => ({ name: it.id, queue: it.queue, text: it.text, link: it.link, createdAt: it.createdAt, snoozes: it.snoozes }));
+    }
     if (!items.length) items = tpl.items?.default || [];
     if (!items.length && source === 'dirs') {
       throw new Error(`template ${tpl.name} takes projects from ${this.config.projects_root} — pass --items a,b (available: ${this.listProjects().join(', ') || 'none'})`);
@@ -93,7 +97,7 @@ export class Manager {
   // what the user confirms when trusting a template: every command it may run, plus its sidecar scripts
   templateCommands(t) {
     const body = (s) => s.shell ?? s.js ?? s.agent?.prompt.split('\n')[0] ?? s.human?.question;
-    return t.tpl.steps.flatMap((s) => [`${s.name} [${bodyKind(s)}]: ${body(s)}`, s.check && `${s.name} check: ${s.check}`, s.verify && `${s.name} verify: ${s.verify}`])
+    return t.tpl.steps.flatMap((s) => [`${s.name} [${bodyKind(s)}${s.outbound ? ', outbound' : ''}]: ${body(s)}`, s.check && `${s.name} check: ${s.check}`, s.verify && `${s.name} verify: ${s.verify}`])
       .filter(Boolean).concat((t.sidecars || []).map((p) => `sidecar: ${p}`));
   }
   trustFile() { return path.join(this.home, 'trusted.json'); }

@@ -70,6 +70,23 @@ test('needInput round trip: runner asks a follow-up question, answer resumes the
   assert.match(fs.readFileSync(paths(run, 'a').notes, 'utf8'), /A: 2/);
 });
 
+test('outbound step runs only after a confirming answer; run_timeout does not tick while waiting for a human', async () => {
+  const { engine, run, fake, cfg } = mkEngine({ items: [{ name: 'a' }, { name: 'b' }],
+    steps: [{ name: 'ask', each: true, human: { question: 'send?', options: ['Да', 'Нет'], pause_on: [] } }, { name: 'send', each: true, shell: 'x', outbound: true }],
+    config: { limits: { run_timeout: 0 } } });
+  run.budgets.since = new Date(Date.now() - 5000).toISOString();
+  engine.start(); await engine.idle();
+  assert.equal(run.status, 'waiting_for_human');
+  assert.equal(run.pausedByUser, false);                 // no active cells: the wall-clock budget is not consulted
+  engine.answer('a', 'ask', { answer: 'Да' }); engine.answer('b', 'ask', { answer: 'Нет' }); await engine.idle();
+  assert.equal(run.cells.a.send.status, 'success');
+  assert.equal(run.cells.b.send.status, 'skipped');
+  assert.match(run.cells.b.send.error, /outbound: not confirmed \(Нет\)/);
+  assert.deepEqual(fake.calls, ['a:send']);
+  assert.equal(run.status, 'done');
+  assert.ok(cfg.limits.run_timeout === 0);
+});
+
 test('an agent that keeps asking NEED_INPUT is paused after 3 rounds instead of looping', async () => {
   const { engine, run } = mkEngine({ items: [{ name: 'a' }],
     steps: [{ name: 's', each: true, shell: 'x' }],

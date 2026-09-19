@@ -7,6 +7,8 @@ import { NeedsTrust } from './engine/manager.js';
 import { render } from './expr.js';
 import { previewRows } from './preview.js';
 import { createMasker, secretValues } from './secrets.js';
+import * as queue from './queue.js';
+import { boardRows } from './board.js';
 
 const MIN_BYTES = 1;
 const MAX_BYTES = 1_000_000;
@@ -64,6 +66,19 @@ export function createApp(opts) {
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
   app.get('/api/projects', (req, res) => res.json(manager.listProjects()));
+
+  app.get('/api/board', (req, res) => {
+    const runs = manager.list().filter((s) => !['done', 'aborted'].includes(s.status)).map((s) => manager.get(s.id)).filter(Boolean);
+    res.json(boardRows({ runs, items: queue.list(manager.home), all: req.query.all === '1' }));
+  });
+  app.get('/api/queues', (req, res) => res.json(queue.list(manager.home)));
+  app.post('/api/queues/:name', (req, res) => {
+    try { res.status(201).json(queue.add(manager.home, req.params.name, { text: req.body.text, link: req.body.link })); }
+    catch (e) { res.status(400).json({ error: e.message }); }
+  });
+  app.post('/api/queues/:name/:id/done', act((req) => queue.done(manager.home, req.params.name, req.params.id)));
+  app.post('/api/queues/:name/:id/drop', act((req) => queue.drop(manager.home, req.params.name, req.params.id, 'dropped by user')));
+  app.post('/api/queues/:name/:id/snooze', act((req) => queue.snooze(manager.home, req.params.name, req.params.id, req.body.when || 'tomorrow')));
 
   app.get('/api/runs', (req, res) => res.json(manager.list()));
   app.post('/api/runs', async (req, res) => {

@@ -9,9 +9,10 @@ const tokenFromHash = () => {
 
 createApp({
   data() {
-    return { view: 'templates', error: '', busy: false, templates: [], templateErrors: [], projects: [], sel: null, trust: null, previewRows: [],
+    return { view: 'board', error: '', busy: false, templates: [], templateErrors: [], projects: [], sel: null, trust: null, previewRows: [],
       form: { params: {}, items: [], itemsJson: '', mode: 'all' }, runs: [], run: null, runId: null, drawer: null, logText: '', ctx: null, timer: null, token: tokenFromHash(),
-      answerFields: {}, runsFilter: { template: '', status: '' } };
+      answerFields: {}, runsFilter: { template: '', status: '' },
+      board: [], boardAll: false, capture: { queue: 'debts', text: '', link: '' }, added: '' };
   },
   computed: {
     waitingCells() {
@@ -45,8 +46,20 @@ createApp({
       if (this.timer) { clearInterval(this.timer); this.timer = null; }
       if (h.startsWith('#/run/')) { this.view = 'run'; this.runId = h.slice(6); this.drawer = null; this.ctx = null; this.loadRun(); this.timer = setInterval(() => this.loadRun(), 3000); }
       else if (h.startsWith('#/runs')) { this.view = 'runs'; this.loadRuns(); this.timer = setInterval(() => this.loadRuns(), 5000); }
-      else { this.view = 'templates'; this.loadTemplates(); }
+      else if (h.startsWith('#/templates')) { this.view = 'templates'; this.loadTemplates(); }
+      else { this.view = 'board'; this.loadBoard(); this.timer = setInterval(() => this.loadBoard(), 5000); }
     },
+    loadBoard() { return this.guard(async () => { this.board = await this.api('GET', `/board${this.boardAll ? '?all=1' : ''}`); }); },
+    addDebt() { return this.guard(async () => {
+      const it = await this.api('POST', `/queues/${encodeURIComponent(this.capture.queue)}`, { text: this.capture.text, link: this.capture.link || null });
+      this.added = `${this.capture.queue}/${it.id}`; this.capture.text = ''; this.capture.link = '';
+      await this.loadBoard();
+    }); },
+    queueAct(row, action, when) { return this.guard(async () => {
+      await this.api('POST', `/queues/${encodeURIComponent(row.group)}/${encodeURIComponent(row.item)}/${action}`, when ? { when } : undefined);
+      await this.loadBoard();
+    }); },
+    age(iso) { const ms = Date.now() - Date.parse(iso); if (!(ms >= 0)) return ''; const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24); return d ? `${d}д` : h ? `${h}ч` : `${m}м`; },
     loadTemplates() { return this.guard(async () => { const d = await this.api('GET', '/templates'); this.templates = d.templates; this.templateErrors = d.errors; this.projects = await this.api('GET', '/projects'); }); },
     loadRuns() { return this.guard(async () => { this.runs = await this.api('GET', '/runs'); }); },
     loadRun() { return this.guard(async () => { this.run = await this.api('GET', `/runs/${this.runId}`); }); },

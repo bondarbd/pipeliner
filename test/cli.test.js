@@ -54,6 +54,41 @@ test('init, doctor, validate, render, dry-run and a real hello run', () => {
   assert.equal(r.code, 0); assert.match(r.out, /alpha/);
 });
 
+test('debts: add → board → morning run → answers close, snooze or keep items', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-cli-q-'));
+  const env = { RUNBOARD_HOME: home };
+  fs.writeFileSync(path.join(home, 'config.yaml'), 'env_file: /dev/null\n');
+  let r = sh(['add', 'debts', 'Петя:', 'где', 'дистрибутив?', '--link', 'sber://t/1'], env);
+  assert.equal(r.code, 0); const id1 = r.out.match(/added debts\/(\S+)/)[1];
+  r = sh(['add', 'debts', 'обещал отчёт'], env); const id2 = r.out.match(/added debts\/(\S+)/)[1];
+  r = sh(['queue'], env);
+  assert.match(r.out, new RegExp(`debts +${id1} +open .*Петя: где дистрибутив\\? +sber://t/1`));
+  r = sh(['board'], env);
+  assert.match(r.out, /nothing needs you now/);
+  r = sh(['board', '--all'], env);
+  assert.match(r.out, new RegExp(`debts +${id1} +open`));
+
+  // morning run without a terminal: stops at the human step, exit 2
+  r = sh(['run', 'debts', '--yes'], env);
+  assert.equal(r.code, 2, r.out); assert.match(r.out, /waiting for input/);
+  const runId = r.out.match(/(\d{8}-\d{6}-\w{4})/)[1];
+  r = sh(['board'], env);
+  assert.match(r.out, new RegExp(`debts +${id1} +reply +waiting .*Петя: где дистрибутив\\? +sber://t/1 +${runId}`));
+
+  r = sh(['answer', runId, id1, 'reply', 'Отправил'], env);
+  assert.equal(r.code, 2);                                  // id2 still waiting
+  r = sh(['answer', runId, id2, 'reply', 'Завтра'], env);
+  assert.equal(r.code, 0, r.out); assert.match(r.out, /status=done/);
+  r = sh(['queue'], env);
+  assert.doesNotMatch(r.out, new RegExp(id1)); assert.match(r.out, new RegExp(`${id2} +snoozed до \\d{4}-\\d{2}-\\d{2}`));
+
+  // a run with nothing open is a no-op
+  r = sh(['run', 'debts', '--yes'], env);
+  assert.equal(r.code, 0); assert.match(r.out, /no open items in queue debts/);
+  r = sh(['snooze', 'debts', id2, 'week'], env); r = sh(['snooze', 'debts', id2, 'week'], env);
+  assert.match(r.out, /dropped .*auto-closed after 3 snoozes/);
+});
+
 test('run without a terminal leaves a NEED_INPUT question unanswered instead of feeding it --answer', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-cli-ni-'));
   const env = { RUNBOARD_HOME: home };

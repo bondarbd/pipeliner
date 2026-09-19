@@ -8,8 +8,8 @@
     "title": { "type": "string" },
     "description": { "type": "string" },
     "params": { "type": "object", "additionalProperties": { "type": "object", "properties": {
-      "type": { "enum": ["string", "number", "boolean"] }, "required": { "type": "boolean" }, "label": { "type": "string" }, "default": {} } } },
-    "items": { "type": "object", "properties": { "source": { "enum": ["dirs", "manual"] }, "default": { "type": "array" } } },
+      "type": { "enum": ["string", "number", "boolean"] }, "required": { "type": "boolean" }, "label": { "type": "string" }, "default": {}, "pattern": { "type": "string" } } } },
+    "items": { "type": "object", "properties": { "source": { "enum": ["dirs", "manual", "queue"] }, "queue": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }, "default": { "type": "array" } } },
     "modes": { "type": "array", "items": { "enum": ["all", "pilot"] } },
     "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } }
   },
@@ -23,7 +23,7 @@
       "human": { "type": "object", "required": ["question"], "properties": { "question": { "type": "string" }, "options": { "type": "array" }, "fields": { "type": "array" }, "pause_on": { "type": "array" } } },
       "output": { "enum": ["keys", "json", "text"] },
       "items": { "type": "string" }, "when": { "type": "string" }, "check": { "type": "string" }, "verify": { "type": "string" },
-      "retriable": { "type": "boolean" }, "raw": { "type": "boolean" },
+      "retriable": { "type": "boolean" }, "raw": { "type": "boolean" }, "outbound": { "type": "boolean" },
       "on_fail": { "type": "array", "items": { "type": "object", "required": ["do"], "properties": {
         "do": { "enum": ["retry", "agent", "pause", "skip_item", "abort"] }, "times": { "type": "integer" }, "delay": { "type": "number" },
         "prompt": { "type": "string" }, "then": { "const": "pause" } } } },
