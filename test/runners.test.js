@@ -34,6 +34,8 @@ test('shell: non-zero exit, timeout, unsafe substitution, git guard', async () =
   const u = await shell.run({ name: 's', shell: 'echo ${{ item.name }}' }, { ...r, exprCtx: { item: { name: 'a;b' } } });
   assert.match(u.error, /unsafe substitution/);
   assert.throws(() => shell.guardGit('git push --force origin release/0.1', ['release/*']), shell.GitGuardError);
+  assert.throws(() => shell.guardGit('git push --force-with-lease=refs/heads/x:abc origin release/0.1', ['release/*']), shell.GitGuardError);
+  assert.throws(() => shell.guardGit('git push --force-with-lease origin release/0.1', ['release/*']), shell.GitGuardError);
   assert.throws(() => shell.guardGit('git push origin develop', ['release/*']), shell.GitGuardError);
   shell.guardGit('git push -u origin release/0.247', ['release/*']);
   shell.guardGit('git push', ['release/*']);

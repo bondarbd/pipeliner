@@ -18,7 +18,7 @@ export function guardGit(cmd, allowed = []) {
     const m = part.match(/\bgit\b(.*)\bpush\b(.*)/);
     if (!m) continue;
     const args = m[2].trim().split(/\s+/).filter(Boolean);
-    if (/(^|\s)(--force|-f|--force-with-lease)(\s|$)/.test(m[2]) || args.some((a) => a.startsWith('+'))) throw new GitGuardError(`git guard: force push is not allowed: ${part.trim()}`);
+    if (/(^|\s)(--force|-f|--force-with-lease)(=|\s|$)/.test(m[2]) || args.some((a) => a.startsWith('+'))) throw new GitGuardError(`git guard: force push is not allowed: ${part.trim()}`);
     const positional = args.filter((a) => !a.startsWith('-'));
     const ref = positional[1];
     if (ref) {
