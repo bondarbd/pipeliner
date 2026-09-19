@@ -202,7 +202,12 @@ export async function run(args, io) {
     const created = await createTrusting(io, args, name,
       () => m.create({ templateName: name, ...req, initiator: { via: 'cli', user: os.userInfo().username } }), (hash) => m.trust(name, hash));
     if (!created) return 3;
-    if (!created.items.length && m.templates.get(name).tpl.items?.source === 'queue') { io.out(`no open items in queue ${m.templates.get(name).tpl.items.queue}`); return 0; }
+    const tplItems = m.templates.get(name).tpl.items;
+    if (!created.items.length && tplItems?.source === 'queue') {   // let the empty run reach done, then say so
+      await m.engine(created.id).idle();
+      io.out(`no open items in queue ${tplItems.queue}`);
+      return 0;
+    }
     io.out(`started ${created.id}`);
     return printRun(await followEngine(m.engine(created.id), io), io);
   });
@@ -265,15 +270,16 @@ export function answer(args, io) {
 export async function add(args, io) {
   const [q, ...rest] = args._;
   let text = rest.join(' ');
-  if (!text || text === '-') text = fs.readFileSync(0, 'utf8');
+  if (!q || !text) { io.err('usage: runboard add <queue> <text…|-> [--link URL]'); return 1; }
+  if (text === '-') text = fs.readFileSync(0, 'utf8');
   const it = queue.add(io.home, q, { text, link: args.link });
   io.out(`added ${q}/${it.id}`);
   return 0;
 }
 export async function queueCmd(args, io) {
   const rows = queue.list(io.home, args._[0]).filter((it) => it.status === 'open' || it.status === 'snoozed')
-    .map((it) => [it.queue, it.id, it.status + (it.until ? ` до ${it.until}` : ''), ageOf(it.createdAt), it.text.slice(0, 80), it.link || '']);
-  io.out(rows.length ? table(rows, ['queue', 'id', 'status', 'age', 'text', 'link']) : 'no open items');
+    .map((it) => [it.queue, it.id, it.status + (it.until ? ` до ${it.until}` : ''), ageOf(it.createdAt), it.text.slice(0, 80), it.link || '', it.runId || '']);
+  io.out(rows.length ? table(rows, ['queue', 'id', 'status', 'age', 'text', 'link', 'run']) : 'no open items');
   return 0;
 }
 export async function done(args, io) { const [q, id] = args._; queue.done(io.home, q, id); io.out(`done ${q}/${id}`); return 0; }
@@ -293,7 +299,7 @@ export async function board(args, io) {
     rows = boardRows({ runs, items: queue.list(io.home), all });
   }
   if (!rows.length) { io.out(all ? 'nothing alive' : 'nothing needs you now (try --all)'); return 0; }
-  io.out(table(rows.map((r) => [r.group, r.item, r.step || '', r.state, ageOf(r.age), r.info.slice(0, 90), r.link || '', r.runId || '']), ['group', 'item', 'step', 'state', 'age', 'info', 'link', 'run']));
+  io.out(table(rows.map((r) => [r.group, r.item, r.step || '', r.state, r.age, r.info.slice(0, 90), r.link || '', r.runId || '']), ['group', 'item', 'step', 'state', 'age', 'info', 'link', 'run']));
   return 0;
 }
 

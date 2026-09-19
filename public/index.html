@@ -50,10 +50,15 @@
         <td><a v-if="r.runId" :href="'#/run/'+r.runId">{{ r.item }}</a><span v-else>{{ r.item }}</span></td>
         <td>{{ r.step || '' }}</td>
         <td><span :class="'cell st-'+r.state">{{ r.state }}</span></td>
-        <td>{{ age(r.age) }}</td>
+        <td>{{ r.age }}</td>
         <td>{{ r.info }}</td>
         <td style="white-space:nowrap"><a v-if="r.link" :href="r.link" target="_blank" rel="noopener">Открыть</a>
-          <span v-if="r.kind==='queue'"> <button style="padding:.1rem .5rem" @click="queueAct(r,'done')">done</button> <button class="secondary" style="padding:.1rem .5rem" @click="queueAct(r,'snooze','tomorrow')">завтра</button> <button class="outline" style="padding:.1rem .5rem" @click="queueAct(r,'drop')">×</button></span></td>
+          <span v-if="r.kind==='queue' && !r.runId"> <button style="padding:.1rem .5rem" @click="queueAct(r,'done')">сделано</button>
+            <button class="secondary" style="padding:.1rem .5rem" @click="queueAct(r,'snooze','tomorrow')">завтра</button>
+            <button class="secondary" style="padding:.1rem .5rem" @click="queueAct(r,'snooze','monday')">пн</button>
+            <button class="secondary" style="padding:.1rem .5rem" @click="queueAct(r,'snooze','week')">неделя</button>
+            <button class="outline" style="padding:.1rem .5rem" @click="queueAct(r,'drop')">×</button></span>
+          <small v-else-if="r.kind==='queue'">в запуске <a :href="'#/run/'+r.runId">{{ r.runId }}</a></small></td>
       </tr></tbody></table>
   </section>
 
@@ -114,7 +119,7 @@
       <span v-if="w.waiting.options.length"><button v-for="o in w.waiting.options" :key="o" @click="answer(w.item, w.step, o, w.fields)">{{ o }}</button></span>
       <span v-else><input v-model="w.fields.answer" placeholder="ответ" style="width:20rem;display:inline"> <button @click="answer(w.item, w.step, w.fields.answer, w.fields)">Отправить</button></span></div>
 
-    <table class="grid"><thead><tr><th>элемент</th><th v-for="s in run.steps" :key="s.name">{{ s.name }}<br><small>{{ s.once ? 'once' + (s.barrier ? ' · ' + s.barrier : '') : 'each' }}</small></th><th></th></tr></thead>
+    <table class="grid"><thead><tr><th>элемент</th><th v-for="s in run.steps" :key="s.name">{{ s.name }}<br><small>{{ s.once ? 'once' + (s.barrier ? ' · ' + s.barrier : '') : 'each' }}{{ s.outbound ? ' · outbound' : '' }}</small></th><th></th></tr></thead>
       <tbody>
         <tr v-for="it in run.items" :key="it.name"><td><b>{{ it.name }}</b> <small v-if="it.status!=='active'">({{ it.status }})</small></td>
           <td v-for="s in run.steps" :key="s.name">

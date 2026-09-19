@@ -15,7 +15,7 @@ const RETRIABLE = ['paused', 'interrupted', 'unverified', 'failed', 'skipped'];
 const SKIPPABLE = ['paused', 'interrupted', 'unverified', 'failed', 'pending', 'waiting'];
 const YES = ['Да', 'да', 'Yes', 'yes'];
 const NO = ['Нет', 'нет', 'No', 'no'];
-const CONFIRM = [...YES, 'Отправить', 'отправить', 'Подтверждаю', 'подтверждаю', 'Send', 'send'];
+const CONFIRM = [...YES, 'Отправить', 'Подтверждаю'];   // default answers that let an outbound step run
 const MAX_QUESTIONS = 3;   // NEED_INPUT rounds per cell before the lane pauses instead of asking again
 
 const now = () => new Date().toISOString();
@@ -28,6 +28,7 @@ export class Engine extends EventEmitter {
     this.run = run; this.config = config; this.runners = runners; this.envValues = envValues; this.sleep = sleep;
     this.masker = createMasker(secretValues(envValues));
     this.active = new Map();     // "item:step" -> { step, agent }
+    this.idleSince = Date.now(); // run_timeout counts only time with running cells: idle stretches are credited back
     this.timers = new Set();
     this.ticking = false; this.tickQueued = false;
     this.idleWaiters = [];
@@ -180,10 +181,14 @@ export class Engine extends EventEmitter {
 
   launch(item, step) {
     const key = this.key(item, step);
+    if (!this.active.size) {   // leaving idle: move the budget clock forward by the time nothing ran
+      const b = this.run.budgets;
+      b.since = new Date(Date.parse(b.since) + (Date.now() - this.idleSince)).toISOString();
+    }
     this.active.set(key, { step: step.name, agent: !!step.agent });
     this.execCell(item, step)
       .catch((e) => { const c = this.cell(item, step); c.error = `engine error: ${e.message}`; this.finish(item, step, c, 'paused'); })
-      .finally(() => { this.active.delete(key); this.scheduleTick(); });
+      .finally(() => { this.active.delete(key); if (!this.active.size) this.idleSince = Date.now(); this.scheduleTick(); });
   }
 
   async execCell(item, step) {
@@ -192,7 +197,8 @@ export class Engine extends EventEmitter {
     if (step.when !== undefined && !render(step.when, ctx)) { c.error = 'when: false'; return this.finish(item, step, c, 'skipped'); }
     if (step.outbound) {   // a step that talks to people runs only after the human said yes on the step right before it
       const answer = this.cell(item, this.steps[this.steps.indexOf(step) - 1]).output?.answer;
-      if (!CONFIRM.includes(answer)) { c.error = `outbound: not confirmed (${answer ?? 'no answer'})`; return this.finish(item, step, c, 'skipped'); }
+      const accepted = Array.isArray(step.outbound) ? step.outbound : CONFIRM;
+      if (!accepted.includes(answer)) { c.error = `outbound: not confirmed (${answer ?? 'no answer'})`; return this.finish(item, step, c, 'skipped'); }
     }
     if (c.attempts >= this.config.limits.max_attempts) { c.error = `budget: max_attempts (${this.config.limits.max_attempts})`; return this.finish(item, step, c, 'paused'); }
     c.attempts++; c.seq = store.nextSeq(this.run); c.status = 'running';
@@ -254,6 +260,7 @@ export class Engine extends EventEmitter {
       c.retryAt = null;
     }
     if (this.run.status === 'running') this.run.status = 'paused';
+    this.run.budgets.since = now();   // downtime is not execution time
     this.changed({ type: 'run.recovered' });
     for (const [itemName, step, c] of this.allCells()) {
       if (c.status !== 'interrupted' || !step.check) continue;

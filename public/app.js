@@ -59,7 +59,6 @@ createApp({
       await this.api('POST', `/queues/${encodeURIComponent(row.group)}/${encodeURIComponent(row.item)}/${action}`, when ? { when } : undefined);
       await this.loadBoard();
     }); },
-    age(iso) { const ms = Date.now() - Date.parse(iso); if (!(ms >= 0)) return ''; const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24); return d ? `${d}д` : h ? `${h}ч` : `${m}м`; },
     loadTemplates() { return this.guard(async () => { const d = await this.api('GET', '/templates'); this.templates = d.templates; this.templateErrors = d.errors; this.projects = await this.api('GET', '/projects'); }); },
     loadRuns() { return this.guard(async () => { this.runs = await this.api('GET', '/runs'); }); },
     loadRun() { return this.guard(async () => { this.run = await this.api('GET', `/runs/${this.runId}`); }); },

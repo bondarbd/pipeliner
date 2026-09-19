@@ -3,12 +3,14 @@ import path from 'node:path';
 import { newRunId, VALID_ID } from './engine/store.js';
 
 // Queues are plain JSON files next to the engine: <home>/inbox/<queue>/<id>.json.
-// The engine never reads them by itself; a run with `items: { source: queue }` pulls the
-// open ones at creation time, and a js step closes them through ctx.queue.
+// The engine never reads them by itself; a run with `items: { source: queue }` takes the
+// open ones at creation time (marking them with its runId), and a js step closes them
+// through ctx.queue.
 
 export const QUEUE_RE = /^[a-z][a-z0-9-]*$/;
 export const MAX_SNOOZES = 3;
 const KEEP_CLOSED_DAYS = 30;
+const BAD_LINK = /^\s*(javascript|data|vbscript):/i;
 
 const pad = (n) => String(n).padStart(2, '0');
 export const localDate = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -34,11 +36,15 @@ function read(home, q, id) {
   if (!fs.existsSync(f)) throw new Error(`no item ${q}/${id}`);
   return JSON.parse(fs.readFileSync(f, 'utf8'));
 }
+const closed = (it, status, note = it.note) => ({ ...it, status, until: null, runId: null, closedAt: new Date().toISOString(), note });
 
 export function add(home, q, { text, link } = {}) {
   text = String(text ?? '').trim();
   if (!text) throw new Error('empty text');
-  return write(home, q, { id: newRunId(), text, link: link || null, createdAt: new Date().toISOString(), status: 'open', until: null, snoozes: 0, closedAt: null, note: null });
+  if (link && BAD_LINK.test(link)) throw new Error('link must be a http(s) or app URL');
+  let id = newRunId();
+  while (fs.existsSync(file(home, q, id))) id = newRunId();   // same second, same random suffix: try again
+  return write(home, q, { id, text, link: link || null, createdAt: new Date().toISOString(), status: 'open', until: null, snoozes: 0, runId: null, closedAt: null, note: null });
 }
 
 export function queues(home) {
@@ -61,19 +67,26 @@ export function list(home, q) {
       } catch { /* half-written or foreign file */ }
     }
   }
-  return out.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  return out.sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')) || String(a.id).localeCompare(String(b.id)));
 }
 
 export const isOpen = (it, day = localDate()) => it.status === 'open' || (it.status === 'snoozed' && it.until <= day);
 export function open(home, q) { return list(home, q).filter((it) => isOpen(it)); }
 
-export function done(home, q, id) { return write(home, q, { ...read(home, q, id), status: 'done', closedAt: new Date().toISOString() }); }
-export function drop(home, q, id, note = null) { return write(home, q, { ...read(home, q, id), status: 'dropped', closedAt: new Date().toISOString(), note }); }
+// a run took the item: it stays open in the queue but is not handed to another run while that one lives
+export function take(home, q, id, runId) { return write(home, q, { ...read(home, q, id), runId }); }
+export function done(home, q, id) { return write(home, q, closed(read(home, q, id), 'done')); }
+export function drop(home, q, id, note = null) { return write(home, q, closed(read(home, q, id), 'dropped', note)); }
 
 export function snoozeDate(when, from = new Date()) {
   const w = String(when).trim().toLowerCase();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(w)) return w;
   const d = new Date(from); d.setHours(12, 0, 0, 0);
+  const m = w.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const x = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12);
+    if (localDate(x) !== w) throw new Error(`snooze: no such date ${when}`);
+    return w;
+  }
   if (['tomorrow', 'завтра'].includes(w)) d.setDate(d.getDate() + 1);
   else if (['monday', 'понедельник'].includes(w)) d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7));
   else if (['week', 'неделя'].includes(w)) d.setDate(d.getDate() + 7);
@@ -85,6 +98,6 @@ export function snoozeDate(when, from = new Date()) {
 export function snooze(home, q, id, when) {
   const it = read(home, q, id);
   const snoozes = it.snoozes + 1;
-  if (snoozes >= MAX_SNOOZES) return write(home, q, { ...it, snoozes, status: 'dropped', until: null, closedAt: new Date().toISOString(), note: `auto-closed after ${MAX_SNOOZES} snoozes` });
-  return write(home, q, { ...it, snoozes, status: 'snoozed', until: snoozeDate(when) });
+  if (snoozes >= MAX_SNOOZES) return write(home, q, { ...closed(it, 'dropped', `auto-closed after ${MAX_SNOOZES} snoozes`), snoozes });
+  return write(home, q, { ...it, snoozes, status: 'snoozed', runId: null, until: snoozeDate(when) });
 }

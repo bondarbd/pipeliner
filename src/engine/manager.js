@@ -77,7 +77,10 @@ export class Manager {
   resolveItems(tpl, items = []) {
     const source = tpl.items?.source || 'manual';
     if (source === 'queue') {
-      return queue.open(this.home, tpl.items.queue).map((it) => ({ name: it.id, queue: it.queue, text: it.text, link: it.link, createdAt: it.createdAt, snoozes: it.snoozes }));
+      // items already held by a live run are left to it; a dead or missing run frees them
+      const busy = (it) => it.runId && !['done', 'aborted'].includes(this.get(it.runId)?.status ?? 'aborted');
+      return queue.open(this.home, tpl.items.queue).filter((it) => !busy(it))
+        .map((it) => ({ name: it.id, queue: it.queue, text: it.text, link: it.link, createdAt: it.createdAt, snoozes: it.snoozes }));
     }
     if (!items.length) items = tpl.items?.default || [];
     if (!items.length && source === 'dirs') {
@@ -118,6 +121,7 @@ export class Manager {
     const resolved = this.resolveItems(t.tpl, items);   // cheap input errors first, the trust question last
     if (!this.trusted(templateName, t.hash)) throw new NeedsTrust(templateName, t.hash, this.templateCommands(t));
     const run = store.createRun(this.home, { template: t, params, items: resolved, mode, initiator });
+    if (t.tpl.items?.source === 'queue') for (const it of run.items) queue.take(this.home, it.queue, it.name, run.id);
     this.attach(run).start();
     return run;
   }

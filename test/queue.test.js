@@ -34,6 +34,8 @@ test('snooze: date forms, reopen when due, third snooze auto-closes', () => {
   assert.equal(queue.snoozeDate('week', wed), '2026-09-30');
   assert.equal(queue.snoozeDate('2026-12-01', wed), '2026-12-01');
   assert.throws(() => queue.snoozeDate('fri'), /expected tomorrow\|monday\|week/);
+  assert.throws(() => queue.snoozeDate('2026-99-99'), /no such date/);
+  assert.throws(() => queue.add(h, 'debts', { text: 'x', link: 'javascript:alert(1)' }), /link must be/);
 
   const it = queue.add(h, 'debts', { text: 'x' });
   let s = queue.snooze(h, 'debts', it.id, 'tomorrow');
@@ -57,8 +59,8 @@ test('board: waiting cells and overdue snoozes come first; --all adds running an
     { queue: 'debts', id: 'q2', status: 'open', text: 'fresh', createdAt: '2026-09-20T09:00:00Z' },
     { queue: 'debts', id: 'q3', status: 'done', text: 'gone', createdAt: '2026-09-20T09:00:00Z' },
   ];
-  const now = boardRows({ runs: [run], items, today: '2026-09-20' });
-  assert.deepEqual(now.map((r) => [r.group, r.item, r.state, r.needsMe]), [['debts', 'q1', 'overdue', true], ['release', 'a', 'paused', true]]);
+  const now = boardRows({ runs: [run], items, today: '2026-09-20', now: Date.parse('2026-09-20T12:00:00Z') });
+  assert.deepEqual(now.map((r) => [r.group, r.item, r.state, r.needsMe, r.age]), [['debts', 'q1', 'overdue', true, '2д'], ['release', 'a', 'paused', true, '3ч']]);
   assert.equal(now[0].link, 'l1');
   const all = boardRows({ runs: [run], items, all: true, today: '2026-09-20' });
   assert.deepEqual(all.map((r) => [r.item, r.state]), [['q1', 'overdue'], ['a', 'paused'], ['q2', 'open'], ['b', 'running']]);

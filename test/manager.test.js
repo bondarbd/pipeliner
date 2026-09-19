@@ -80,10 +80,13 @@ test('items.source: queue pulls open queue items and ignores --items', async () 
   const got = run.items.map((i) => [i.name === a.id, i.text, i.queue, i.link]).sort((x, y) => x[1].localeCompare(y[1]));
   assert.deepEqual(got, [[true, 'first', 'debts', 'l'], [false, 'second', 'debts', null]]);
   assert.ok(run.items[0].addedAt);
+  const { done, list } = await import('../src/queue.js');
+  assert.ok(list(home, 'debts').every((it) => it.runId === run.id));   // taken by this run
   await m.engine(run.id).idle();
   assert.equal(m.get(run.id).status, 'done');
-  // this template has no closing step, so the items stay open; close them and the next run is empty
-  const { done } = await import('../src/queue.js');
+  // this template has no closing step, so the items stay open; the finished run no longer holds them
+  const again = await m.create({ templateName: 'demo' });
+  assert.equal(again.items.length, 2);
   for (const it of run.items) done(home, 'debts', it.name);
   const empty = await m.create({ templateName: 'demo' });
   assert.deepEqual(empty.items, []);

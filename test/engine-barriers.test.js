@@ -87,6 +87,28 @@ test('outbound step runs only after a confirming answer; run_timeout does not ti
   assert.ok(cfg.limits.run_timeout === 0);
 });
 
+test('a long human wait is credited back to the budget clock, so parallel cells after it do not trip run_timeout', async () => {
+  const slow = (ms) => () => new Promise((r) => setTimeout(() => r({ ok: true, output: {} }), ms));
+  const { engine, run } = mkEngine({ items: [{ name: 'a' }, { name: 'b' }],
+    steps: [{ name: 'ask', each: true, human: { question: 'go?', pause_on: [] } }, { name: 'work', each: true, shell: 'x' }],
+    plan: { 'a:work': slow(10), 'b:work': slow(60) }, config: { limits: { run_timeout: 1 } } });
+  engine.start(); await engine.idle();
+  // pretend the run was created 8h ago and the engine sat idle since then
+  run.budgets.since = new Date(Date.now() - 8 * 3600_000).toISOString();
+  engine.idleSince = Date.now() - 8 * 3600_000;
+  engine.answer('a', 'ask', { answer: 'Да' }); engine.answer('b', 'ask', { answer: 'Да' }); await engine.idle();
+  assert.equal(run.pausedByUser, false, run.note);
+  assert.equal(run.status, 'done');
+});
+
+test('outbound accepts a custom list of confirming answers', async () => {
+  const { engine, run } = mkEngine({ items: [{ name: 'a' }],
+    steps: [{ name: 'ask', each: true, human: { question: 'q', pause_on: [] } }, { name: 'send', each: true, shell: 'x', outbound: ['Отправил'] }] });
+  engine.start(); await engine.idle();
+  engine.answer('a', 'ask', { answer: 'Отправил' }); await engine.idle();
+  assert.equal(run.cells.a.send.status, 'success');
+});
+
 test('an agent that keeps asking NEED_INPUT is paused after 3 rounds instead of looping', async () => {
   const { engine, run } = mkEngine({ items: [{ name: 'a' }],
     steps: [{ name: 's', each: true, shell: 'x' }],

@@ -82,9 +82,14 @@ test('debts: add → board → morning run → answers close, snooze or keep ite
   r = sh(['queue'], env);
   assert.doesNotMatch(r.out, new RegExp(id1)); assert.match(r.out, new RegExp(`${id2} +snoozed до \\d{4}-\\d{2}-\\d{2}`));
 
-  // a run with nothing open is a no-op
+  // a run with nothing open is a no-op that still ends in done
   r = sh(['run', 'debts', '--yes'], env);
   assert.equal(r.code, 0); assert.match(r.out, /no open items in queue debts/);
+  r = sh(['list'], env);
+  assert.doesNotMatch(r.out, /debts +running/);
+  assert.equal((r.out.match(/debts +done/g) || []).length, 2);
+  r = sh(['add', 'debts'], env);
+  assert.equal(r.code, 1); assert.match(r.out, /usage: runboard add/);
   r = sh(['snooze', 'debts', id2, 'week'], env); r = sh(['snooze', 'debts', id2, 'week'], env);
   assert.match(r.out, /dropped .*auto-closed after 3 snoozes/);
 });

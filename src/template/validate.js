@@ -49,6 +49,7 @@ export function validateTemplate(tpl) {
     } else if (s.outbound) {
       const prev = tpl.steps[i - 1];
       if (!prev || prev.human === undefined || !!prev.each !== !!s.each) err(`${p}.outbound`, 'outbound step must directly follow a human step of the same kind (each/once)');
+      if (s.outbound !== true && !(Array.isArray(s.outbound) && s.outbound.length && s.outbound.every((a) => typeof a === 'string'))) err(`${p}.outbound`, 'must be true or a non-empty list of confirming answers');
     }
     if (s.on_fail !== undefined && s.human === undefined) {
       if (!Array.isArray(s.on_fail) || !s.on_fail.length) err(`${p}.on_fail`, 'must be a non-empty list');
