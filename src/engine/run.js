@@ -123,9 +123,30 @@ export class Engine extends EventEmitter {
       }
     }
   }
-  // Task 12 implements these two; part 1 stubs keep once-steps from starting.
-  pilotGate() {}
-  maybeStartOnce() {}
+  pilotGate(items, positions) {
+    const p = this.run.pilot;
+    if (!p || p.status !== 'running') return;
+    const pilot = items.find((i) => i.name === p.item);
+    if (!pilot) { p.status = 'approved'; this.changed({ type: 'pilot.auto_approved' }); return; }
+    const firstOnce = this.steps.findIndex((s) => s.once);
+    const limit = firstOnce === -1 ? this.steps.length : firstOnce;
+    if (positions.get(pilot.name) >= limit) { p.status = 'waiting'; this.changed({ type: 'pilot.waiting' }); }
+  }
+
+  maybeStartOnce(step, i, items, positions) {
+    const c = store.itemCell(this.run, null, step.name);
+    if (c.status !== 'pending' || c.retryAt) return;
+    if (this.run.pilot && this.run.pilot.status !== 'approved') return;
+    const policy = step.barrier || 'all';
+    const blockers = items.filter((it) => {
+      const p = positions.get(it.name);
+      if (p >= i) return false;
+      if (policy === 'succeeded') { const cur = this.cell(it, this.steps[p]); return !STUCK.has(cur.status); }
+      return true;
+    });
+    if (blockers.length || !this.hasSlot(step)) return;
+    this.launch(null, step);
+  }
 
   hasSlot(step) {
     const running = [...this.active.values()];
@@ -277,7 +298,53 @@ export class Engine extends EventEmitter {
     if (step.items !== undefined && step.once) this.produceItems(step, output);
     this.changed({ type: 'cell.success', item: item?.name, step: step.name, how });
   }
-  produceItems() {} // Task 12
+  produceItems(step, output) {
+    const list = render(step.items, this.exprCtx(null, step, output));
+    if (!Array.isArray(list)) throw new Error(`items: expression of step ${step.name} must return an array`);
+    const idx = this.steps.indexOf(step);
+    const existing = new Set(this.run.items.map((i) => i.name));
+    let added = 0;
+    for (const raw of list) {
+      if (!raw || !raw.name || existing.has(raw.name)) continue;
+      existing.add(raw.name);
+      const it = { status: 'active', ...raw };
+      this.run.items.push(it);
+      for (let k = 0; k <= idx; k++) if (this.steps[k].each) store.itemCell(this.run, it.name, this.steps[k].name).status = 'n/a';
+      for (let k = idx + 1; k < this.steps.length; k++) if (this.steps[k].each) store.itemCell(this.run, it.name, this.steps[k].name);
+      added++;
+    }
+    if (list.length > 50) { this.run.pausedByUser = true; this.run.note = `step ${step.name} produced ${list.length} items — resume the run to continue`; }
+    store.addEvent(this.run, { type: 'items.added', step: step.name, count: added });
+  }
+
+  answer(itemName, stepName, { answer, fields = {} } = {}) {
+    if (itemName === '__pilot__') {
+      const p = this.run.pilot;
+      if (!p || p.status !== 'waiting') throw new Error('pilot is not waiting');
+      p.status = ['Да', 'yes', 'Yes', 'да'].includes(answer) ? 'approved' : 'rejected';
+      if (p.status === 'approved') this.run.pilotNotes = store.readNotes(this.run, p.item, 8192) || null;
+      store.appendNotes(this.run, null, `pilot ${p.item}: ${answer}`, 'human');
+      this.changed({ type: `pilot.${p.status}`, by: 'user' });
+      this.scheduleTick();
+      return;
+    }
+    const c = store.itemCell(this.run, itemName, stepName);
+    if (c.status !== 'waiting') throw new Error(`cell ${itemName ?? '*'}:${stepName} is not waiting`);
+    const extra = Object.keys(fields).length ? `\n${JSON.stringify(fields)}` : '';
+    store.appendNotes(this.run, itemName, `Q: ${c.waiting.question}\nA: ${answer}${extra}`, 'human');
+    if (c.needInput) {
+      c.status = 'pending'; c.needInput = false; c.waiting = null; c.attempts--;
+      this.changed({ type: 'cell.input_given', item: itemName, step: stepName });
+      this.scheduleTick();
+      return;
+    }
+    const step = this.steps.find((s) => s.name === stepName);
+    const pauseOn = step.human?.pause_on || ['Нет', 'No', 'no', 'нет'];
+    c.waiting = null;
+    if (pauseOn.includes(answer)) { c.status = 'paused'; c.error = `answer: ${answer}`; this.changed({ type: 'cell.paused', item: itemName, step: stepName, error: c.error }); }
+    else this.finishSuccess(itemName ? this.item(itemName) : null, step, c, { answer, ...fields }, 'human');
+    this.scheduleTick();
+  }
 
   updateRunStatus() {
     const run = this.run;
