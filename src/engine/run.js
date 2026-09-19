@@ -102,9 +102,22 @@ export class Engine extends EventEmitter {
     }
   }
 
-  // Task 13 fills these two in; part 1 keeps them inert.
-  checkRunTimeout() {}
-  budgetExceeded() { return false; }
+  checkRunTimeout() {
+    if (this.run.pausedByUser) return;
+    const age = Date.now() - Date.parse(this.run.createdAt);
+    if (age > this.config.limits.run_timeout * 1000) {
+      this.run.pausedByUser = true; this.run.note = 'budget: run_timeout exceeded — resume to continue';
+      this.changed({ type: 'run.timeout' });
+    }
+  }
+  budgetExceeded() {
+    if (this.run.budgets.agentCalls < this.config.limits.max_agent_calls) return false;
+    if (!this.run.pausedByUser) {
+      this.run.pausedByUser = true; this.run.note = `budget: max_agent_calls (${this.config.limits.max_agent_calls}) exhausted — resume to continue`;
+      this.changed({ type: 'run.budget' });
+    }
+    return true;
+  }
 
   startRunnable() {
     const items = this.activeItems();
@@ -201,14 +214,57 @@ export class Engine extends EventEmitter {
       }
       if (!(await this.runVerify(item, step, c, r))) { await this.applyLadder(item, step, c, r); return; }
       this.finishSuccess(item, step, c, res.output || {}, 'run');
+    } catch (e) {
+      if (e instanceof locks.LockBusy) { c.status = 'paused'; c.error = e.message; c.attempts--; this.changed({ type: 'cell.lock_busy', item: item?.name, step: step.name, error: e.message }); return; }
+      throw e;
     } finally {
       if (lockHeld) locks.release(this.config.home, lockHeld, this.run.id);
     }
   }
-  // Task 13 implements these three; part 1 versions are pass-through.
-  async takeLock() { return null; }
-  async runCheck() { return false; }
-  async runVerify() { return true; }
+  async takeLock(step, ctx, c) {
+    if (!step.resource) return null;
+    const res = render(step.resource, ctx);
+    c.note = `waiting for lock ${res}`;
+    try { await locks.acquire(this.config.home, res, { owner: this.run.id, waitMs: this.config.limits.lock_wait * 1000 }); }
+    finally { c.note = null; }
+    return res;
+  }
+  async runCheck(item, step, c, r) {
+    if (!step.check) return false;
+    const chk = await this.runners.shell.run({ name: `${step.name}#check`, shell: step.check, output: step.output || 'keys' }, { ...r, logPath: r.logPath.replace(/\.log$/, '.check.log') });
+    if (!chk.ok) return false;
+    this.finishSuccess(item, step, c, chk.output || {}, 'check');
+    return true;
+  }
+  async runVerify(item, step, c, r) {
+    if (!step.verify) return true;
+    const v = await this.runners.shell.run({ name: `${step.name}#verify`, shell: step.verify, output: 'text' }, { ...r, logPath: r.logPath.replace(/\.log$/, '.verify.log') });
+    if (v.ok) return true;
+    c.status = 'unverified'; c.error = `verify failed: ${v.error}`;
+    this.changed({ type: 'cell.unverified', item: item?.name, step: step.name, error: c.error });
+    return false;
+  }
+
+  async recover() {
+    for (const [itemName, step, c] of this.allCells()) {
+      if (c.status === 'running') {
+        if (c.pid && isAlive(c.pid)) await killGroup(c.pid);
+        c.status = 'interrupted'; c.error = 'panel restarted during this step'; c.pid = null;
+      }
+      if (c.status === 'pending' && c.retryAt) c.retryAt = null;
+      if (c.status === 'waiting' && c.needInput === false && !step.human) { c.status = 'interrupted'; c.error = 'panel restarted while waiting'; }
+    }
+    if (this.run.status === 'running') this.run.status = 'paused';
+    this.changed({ type: 'run.recovered' });
+    for (const [itemName, step, c] of this.allCells()) {
+      if (c.status !== 'interrupted' || !step.check) continue;
+      const item = itemName ? this.item(itemName) : null;
+      c.seq = store.nextSeq(this.run);
+      const r = this.rctx(item, step, c, this.exprCtx(item, step));
+      await this.runCheck(item, step, c, r);
+    }
+    return this.start();
+  }
 
   async applyLadder(item, step, c, r) {
     const rungs = step.on_fail || [{ do: 'pause' }];
